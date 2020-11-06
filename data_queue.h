@@ -1,0 +1,38 @@
+
+typedef struct MyAVPacketList{
+	AVPacket pkt;
+	struct MyAVPacketList *next;
+}MyAVPacketList, *pMyAVPacketList;
+
+typedef struct packetQueue{
+	pMyAVPacketList first_pkt, last_pkt;
+	int nb_packets;
+	int size;
+	int abort_request:1;
+	int pause:1;
+	int eof:1;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+}packetQueue;
+
+typedef struct Frame{
+	AVFrame *frame;
+}Frame;
+
+typedef struct frameQueue{
+	Frame *queue;
+	int size;
+	int max;
+	int read_index;
+	int write_index;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	packetQueue *pkt_queue;
+}frameQueue;
+
+packetQueue *create_packet_queue(void);
+void clean_packet_queue(packetQueue *pkt_queue);
+void destory_packet_queue(packetQueue *pkt_queue);
+frameQueue *create_frame_queue(int max, packetQueue *pkt_queue);
+void clean_frame_queue(frameQueue *frame_queue);
+void destory_frame_queue(frameQueue *frame_queue);
