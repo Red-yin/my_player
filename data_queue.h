@@ -33,6 +33,14 @@ typedef struct frameQueue{
 packetQueue *create_packet_queue(void);
 void clean_packet_queue(packetQueue *pkt_queue);
 void destory_packet_queue(packetQueue *pkt_queue);
+//copy src data which is saved in q to pkt, pkt must have enough memory
+int packet_queue_get(packetQueue *q, AVPacket *pkt, int block);
+int packet_queue_put(packetQueue *q, AVPacket *pkt);
+
+
 frameQueue *create_frame_queue(int max, packetQueue *pkt_queue);
 void clean_frame_queue(frameQueue *frame_queue);
 void destory_frame_queue(frameQueue *frame_queue);
+int frame_queue_put(frameQueue *q, AVFrame *frame, int block);
+int frame_queue_get(frameQueue *q, AVFrame *frame, int block);
+int frame_queue_set_pkt_queue(frameQueue *q, packetQueue *pkt_queue);
