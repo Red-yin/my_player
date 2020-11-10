@@ -1,0 +1,14 @@
+prefix=./out_dir
+exec_prefix=${prefix}
+libdir=./out_dir/lib
+includedir=./out_dir/include
+
+Name: libavdevice
+Description: FFmpeg device handling library
+Version: 58.5.100
+Requires: libavfilter >= 7.40.101, libswscale >= 5.3.100, libavformat >= 58.20.100, libavcodec >= 58.35.100, libswresample >= 3.3.100, libavutil >= 56.22.100
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavdevice -lm -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr/lib -ldrm -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr/lib -lasound -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr/lib -lSDL2
+Libs.private: 
+Cflags: -I${includedir}

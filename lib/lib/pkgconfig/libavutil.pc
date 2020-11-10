@@ -1,0 +1,14 @@
+prefix=./out_dir
+exec_prefix=${prefix}
+libdir=./out_dir/lib
+includedir=./out_dir/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 56.22.100
+Requires: 
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavutil -pthread -lm -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr/lib -ldrm
+Libs.private: 
+Cflags: -I${includedir}

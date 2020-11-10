@@ -1,0 +1,14 @@
+prefix=./out_dir
+exec_prefix=${prefix}
+libdir=./out_dir/lib
+includedir=./out_dir/include
+
+Name: libavformat
+Description: FFmpeg container format library
+Version: 58.20.100
+Requires: libavcodec >= 58.35.100, libavutil >= 56.22.100
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavformat -lm -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr/lib -lz -L/home/redding/workspace/workcode/mixpad_rk3326_linux/buildroot/output/rockchip_rk3326_64/host/bin/../aarch64-buildroot-linux-gnu/sysroot/usr//lib -lssl -lcrypto
+Libs.private: 
+Cflags: -I${includedir}
