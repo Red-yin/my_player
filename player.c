@@ -8,6 +8,7 @@ typedef struct player_ctrl{
 	int pause:1;
 	int eof:1;
 	AVFormatContext *ic;
+	AVCodecContext *avctx;
 	packetQueue *pkt_queue;
 	frameQueue *frame_queue;
 }player_ctrl;
@@ -64,15 +65,33 @@ player_ctrl *player_init()
 void *decode_thread(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
-	int got_frame;
-	do{
-		AVPacket pkt;
-		got_frame = packet_queue_get(player->pkt_queue, &pkt, 1);
-		if(got_frame < 0)
-
-		av_packet_unref(&pkt);
+	int got_frame, packet_pending = 0, ret;
+	AVPacket pkt;
+	AVFrame *frame == av_frame_alloc();
+	if(frame == NULL){
+		log_print("av_frame_alloc failed\n");
+		goto end;
 	}
 
+	while(1){
+		do{
+			ret = avcodec_receive_frame(player->avctx, frame);
+			if(ret >= 0){
+				frame_queue_put(player->frame_queue, frame, 0);
+			}
+		}while(ret != AVERROR(EAGAIN));
+
+		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) >= 0){
+			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
+				packet_pending = 1;
+			}else{
+				av_packet_unref(&pkt);
+			}
+		}
+	}
+end:
+	av_frame_free(frame);
+	return NULL;
 }
 
 int stream_component_open(player_ctrl *player, int stream_index)
@@ -101,9 +120,12 @@ int stream_component_open(player_ctrl *player, int stream_index)
 	int sample_rate = avctx->sample_rate;
 	int channels = avctx->channels;
 	uint64_t channel_layout = avctx->channel_layout;
+	player->avctx = avctx;
 
+	return 0;
 fail:
-
+	avcodec_free_context(&avctx);
+	return -1;
 }
 
 int decode_interrupt_cb(void *ctx)
@@ -114,31 +136,19 @@ int decode_interrupt_cb(void *ctx)
 
 void *read_thread(void *param)
 {
-	int err, stream_index;
 	player_ctrl *player = (player_ctrl *)param;
-	AVFormatContext *ic = avformat_alloc_context();
-	if(ic == NULL){
-		log_print("avformat alloc failed\n");
-		return NULL;
-	}
-	ic->interrupt_callback.callback = decode_interrupt_cb;
-	ic->interrupt_callback.opaque = param;
-	err = avformat_open_input(&ic, filename, NULL, NULL);
-	if(err < 0){
-		log_print("%s open input failed: %d\n", filename, err);
-		return NULL;
-	}
-	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-	player->ic = ic;
-	stream_component_open(player, stream_index);
-
 	player->eof = 0;
 	while(1){
+		if(player->stop){
+			log_print("stop...\n");
+			break;
+		}
 		ret = av_read_frame(ic, &pkt);
 		if(ret < 0){
 			if(ret == AVERROR_EOF || avio_feof(ic->pb)){
 				packet_queue_put_nullpacket();
 				player->eof = 1;
+				log_print("input end...\n");
 				break;
 			}
 		}else{
@@ -155,6 +165,23 @@ int player_start(player_ctrl *player)
 	if(player == NULL){
 		return -1;
 	}
+	int err, stream_index;
+	AVFormatContext *ic = avformat_alloc_context();
+	if(ic == NULL){
+		log_print("avformat alloc failed\n");
+		return NULL;
+	}
+	ic->interrupt_callback.callback = decode_interrupt_cb;
+	ic->interrupt_callback.opaque = param;
+	err = avformat_open_input(&ic, filename, NULL, NULL);
+	if(err < 0){
+		log_print("%s open input failed: %d\n", filename, err);
+		return NULL;
+	}
+	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	player->ic = ic;
+	stream_component_open(player, stream_index);
+
 	pthread_create(&pt, NULL, read_thread, (void *)player);
 	SDL_CreateThread(decode_thread, "decoder", (void *)player);
 }

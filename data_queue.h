@@ -1,4 +1,7 @@
 
+#include <pthread.h>
+#include "libavcodec/avcodec.h"
+#include "libavutil/frame.h"
 typedef struct MyAVPacketList{
 	AVPacket pkt;
 	struct MyAVPacketList *next;
