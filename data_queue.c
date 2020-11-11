@@ -7,7 +7,7 @@ void destory_MyAVPacketList(pMyAVPacketList node)
 	}
 }
 
-packetQueue *create_packet_queue(void);
+packetQueue *create_packet_queue(void)
 {
 	packetQueue *q = (packetQueue *)calloc(1, sizeof(packetQueue));
 	if(q == NULL){
@@ -16,7 +16,7 @@ packetQueue *create_packet_queue(void);
 	}
 	q->first_pkt = q->last_pkt = NULL;
 	pthread_mutex_lock(&q->mutex);
-	pthread_cond_init(&q->cond);
+	pthread_cond_init(&q->cond, NULL);
 	return q;
 }
 
@@ -42,8 +42,8 @@ void clean_packet_queue(packetQueue *q)
 void destory_packet_queue(packetQueue *q)
 {
 	clean_packet_queue(q);
-	pthread_mutex_destory(&q->mutex);
-	pthread_cond_destory(&q->cond);
+	pthread_mutex_destroy(&q->mutex);
+	pthread_cond_destroy(&q->cond);
 }
 
 int packet_queue_put(packetQueue *q, AVPacket *pkt)
@@ -51,7 +51,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt)
 	if(q == NULL || pkt == NULL){
 		return -1;
 	}
-	pMyAVPacketList *pkt1 = (pMyAVPacketList)calloc(1, sizeof(MyAVPacketList));
+	pMyAVPacketList pkt1 = (pMyAVPacketList)calloc(1, sizeof(MyAVPacketList));
 	if(pkt1 == NULL){
 		log_print("[%s %d]calloc failed\n", __FILE__, __LINE__);
 		return -1;
@@ -138,7 +138,7 @@ frameQueue *create_frame_queue(int max, packetQueue *pkt_queue)
 	q->read_index = q->write_index = 0;
 	q->pkt_queue = pkt_queue;
 	pthread_mutex_lock(&q->mutex);
-	pthread_cond_init(&q->cond);
+	pthread_cond_init(&q->cond, NULL);
 	return q;
 }
 
@@ -173,8 +173,8 @@ void destory_frame_queue(frameQueue *q)
 	}
 	pthread_mutex_unlock(&q->mutex);
 
-	pthread_mutex_destory(&q->mutex);
-	pthread_cond_destory(&q->cond);
+	pthread_mutex_destroy(&q->mutex);
+	pthread_cond_destroy(&q->cond);
 }
 
 int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
