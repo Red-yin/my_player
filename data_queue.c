@@ -1,4 +1,5 @@
 #include "data_queue.h"
+#include "log.h"
 
 void destory_MyAVPacketList(pMyAVPacketList node)
 {
@@ -167,7 +168,7 @@ void destory_frame_queue(frameQueue *q)
 	pthread_mutex_lock(&q->mutex);
 	if(q->queue){
 		for(i = 0; i < q->max; i++){
-			av_frame_free(q->queue[i].frame);
+			av_frame_free(&q->queue[i].frame);
 		}
 		free(q->queue);
 	}

@@ -1,7 +1,11 @@
 #include "data_queue.h"
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #include <pthread.h>
+#include "libavformat/avformat.h"
+#include "log.h"
 #define FRAME_QUEUE_SIZE 16
+
+const char *filename = NULL;
 
 typedef struct player_ctrl{
 	int stop:1;
@@ -14,7 +18,7 @@ typedef struct player_ctrl{
 }player_ctrl;
 
 SDL_AudioDeviceID audio_dev;
-void *sdl_audio_callback(void *param)
+void sdl_audio_callback(void *param, Uint8 *stream, int len)
 {
 	frameQueue *fq = (frameQueue *)param;
 	AVFrame *frame = av_frame_alloc();
@@ -24,6 +28,9 @@ void *sdl_audio_callback(void *param)
 			frame_queue_set_pkt_queue(fq, NULL);
 			continue;
 		}
+		int data_len = av_samples_get_buffer_size(NULL, frame->channels, frame->nb_samples, frame->format, 1);
+		int len1 = data_len < len ? data_len: len;
+		SDL_MixAudioFormat(stream, (uint8_t *)frame->data[0], AUDIO_S16SYS, len1, SDL_MIX_MAXVOLUME);
 
 	}while(1);
 }
@@ -42,7 +49,7 @@ player_ctrl *player_init()
 		return NULL;
 	}
 	packetQueue *pq = create_packet_queue();
-	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE);
+	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
 	SDL_AudioSpec wanted_spec, spec;
 	wanted_spec.format = AUDIO_S16SYS;
 	wanted_spec.silence = 0;
@@ -51,7 +58,7 @@ player_ctrl *player_init()
 	wanted_spec.freq = 44100;
 	wanted_spec.callback = sdl_audio_callback;
 	wanted_spec.userdata = (void *)fq;
-	audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHENNELS_CHANGE);
+	audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
 
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
@@ -62,12 +69,12 @@ player_ctrl *player_init()
 	return player;
 }
 
-void *decode_thread(void *param)
+int decode_thread(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
 	int got_frame, packet_pending = 0, ret;
 	AVPacket pkt;
-	AVFrame *frame == av_frame_alloc();
+	AVFrame *frame = av_frame_alloc();
 	if(frame == NULL){
 		log_print("av_frame_alloc failed\n");
 		goto end;
@@ -94,8 +101,8 @@ void *decode_thread(void *param)
 		}
 	}
 end:
-	av_frame_free(frame);
-	return NULL;
+	av_frame_free(&frame);
+	return 0;
 }
 
 int stream_component_open(player_ctrl *player, int stream_index)
@@ -105,7 +112,7 @@ int stream_component_open(player_ctrl *player, int stream_index)
 	AVCodec *codec;
 	AVPacket pkt;
 	int ret;
-	if(stream_index < 0 || stream_index >= ic->nb_stream)
+	if(stream_index < 0 || stream_index >= ic->nb_streams)
 		return -1;
 
 	avctx = avcodec_alloc_context3(NULL);
@@ -140,8 +147,11 @@ int decode_interrupt_cb(void *ctx)
 
 void *read_thread(void *param)
 {
+	int ret;
 	player_ctrl *player = (player_ctrl *)param;
+	AVFormatContext *ic = player->ic;
 	player->eof = 0;
+	AVPacket pkt;
 	while(1){
 		if(player->stop){
 			log_print("stop...\n");
@@ -150,7 +160,7 @@ void *read_thread(void *param)
 		ret = av_read_frame(ic, &pkt);
 		if(ret < 0){
 			if(ret == AVERROR_EOF || avio_feof(ic->pb)){
-				packet_queue_put_nullpacket();
+				//packet_queue_put_nullpacket();
 				player->eof = 1;
 				log_print("input end...\n");
 				break;
@@ -161,7 +171,7 @@ void *read_thread(void *param)
 		}
 	}
 
-	avformat_close_input(ic);
+	avformat_close_input(&ic);
 }
 
 int player_start(player_ctrl *player)
@@ -173,18 +183,19 @@ int player_start(player_ctrl *player)
 	AVFormatContext *ic = avformat_alloc_context();
 	if(ic == NULL){
 		log_print("avformat alloc failed\n");
-		return NULL;
+		return -1;
 	}
 	ic->interrupt_callback.callback = decode_interrupt_cb;
-	ic->interrupt_callback.opaque = param;
+	ic->interrupt_callback.opaque = (void *)player;
 	err = avformat_open_input(&ic, filename, NULL, NULL);
 	if(err < 0){
 		log_print("%s open input failed: %d\n", filename, err);
-		return NULL;
+		return -1;
 	}
 	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
 	stream_component_open(player, stream_index);
+	pthread_t pt;
 
 	pthread_create(&pt, NULL, read_thread, (void *)player);
 	SDL_CreateThread(decode_thread, "decoder", (void *)player);
