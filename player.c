@@ -79,12 +79,16 @@ void *decode_thread(void *param)
 			if(ret >= 0){
 				frame_queue_put(player->frame_queue, frame, 0);
 			}
+			if(ret == AVERROR_EOF){
+				//decode end of file
+			}
 		}while(ret != AVERROR(EAGAIN));
 
 		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) >= 0){
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
 				packet_pending = 1;
 			}else{
+				packet_pending = 0;
 				av_packet_unref(&pkt);
 			}
 		}
