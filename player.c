@@ -219,9 +219,34 @@ int player_start(player_ctrl *player)
 		log_print("%s open input failed: %d\n", filename, err);
 		return -1;
 	}
-	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	int i;
+	for(i = 0; i < ic->nb_streams; i++){
+		AVStream *stream = ic->streams[i];
+		AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+		if(codec == NULL){
+			log_print("decoder find failed\n");
+			continue;
+		}
+		AVCodecContext *avctx;
+		avctx = avcodec_alloc_context3(codec);
+		if(avctx == NULL){
+			log_print("avcocde_alloc_context3 failed\n");
+			return AVERROR(ENOMEM);
+		}
+		int ret = avcodec_parameters_to_context(avctx, stream->codecpar);
+		if(ret < 0){
+			log_print("avcodec_parameters_to_context failed\n");
+			return -1;
+		}
+		if(avcodec_open2(avctx, codec, NULL) < 0){
+			log_print("could not open codec for input stream %d", i);
+			return -1;
+		}
+		player->avctx = avctx;
+	}
+	//stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
-	stream_component_open(player, 0);
+	//stream_component_open(player, 0);
 	pthread_t pt, pt2;
 
 	pthread_create(&pt, NULL, read_thread, (void *)player);
