@@ -5,7 +5,7 @@
 #include "log.h"
 #define FRAME_QUEUE_SIZE 16
 
-const char *filename = NULL;
+const char *filename = "./alarm.mp3";
 
 typedef struct player_ctrl{
 	int stop:1;
@@ -17,6 +17,7 @@ typedef struct player_ctrl{
 	frameQueue *frame_queue;
 }player_ctrl;
 
+#if 1
 SDL_AudioDeviceID audio_dev;
 void sdl_audio_callback(void *param, Uint8 *stream, int len)
 {
@@ -29,27 +30,41 @@ void sdl_audio_callback(void *param, Uint8 *stream, int len)
 			continue;
 		}
 		int data_len = av_samples_get_buffer_size(NULL, frame->channels, frame->nb_samples, frame->format, 1);
+		printf("frame len: %d\n", data_len);
 		int len1 = data_len < len ? data_len: len;
 		SDL_MixAudioFormat(stream, (uint8_t *)frame->data[0], AUDIO_S16SYS, len1, SDL_MIX_MAXVOLUME);
-
 	}while(1);
 }
+#endif
 
 player_ctrl *player_init()
 {
+#if 1
 	int flags = 0;
 	flags = SDL_INIT_AUDIO;
 	if(0 != SDL_Init(flags)){
 		log_print("SDL_Init failed\n");
 		return NULL;
 	}
+#endif
+	//avdevice_register_all();
+	printf("[%s %d]\n",__FILE__,__LINE__);
+	avformat_network_init();
+	av_register_all();
+	printf("[%s %d]\n",__FILE__,__LINE__);
+
 	player_ctrl *player = (player_ctrl *)calloc(1, sizeof(player_ctrl));
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	if(player == NULL){
 		log_print("player calloc failed\n");
 		return NULL;
 	}
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	packetQueue *pq = create_packet_queue();
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
+	printf("[%s %d]\n",__FILE__,__LINE__);
+#if 1
 	SDL_AudioSpec wanted_spec, spec;
 	wanted_spec.format = AUDIO_S16SYS;
 	wanted_spec.silence = 0;
@@ -59,6 +74,7 @@ player_ctrl *player_init()
 	wanted_spec.callback = sdl_audio_callback;
 	wanted_spec.userdata = (void *)fq;
 	audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
+#endif
 
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
@@ -69,7 +85,7 @@ player_ctrl *player_init()
 	return player;
 }
 
-int decode_thread(void *param)
+void *decode_thread(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
 	int got_frame, packet_pending = 0, ret;
@@ -102,7 +118,7 @@ int decode_thread(void *param)
 	}
 end:
 	av_frame_free(&frame);
-	return 0;
+	return NULL;
 }
 
 int stream_component_open(player_ctrl *player, int stream_index)
@@ -179,26 +195,33 @@ int player_start(player_ctrl *player)
 	if(player == NULL){
 		return -1;
 	}
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	int err, stream_index;
 	AVFormatContext *ic = avformat_alloc_context();
 	if(ic == NULL){
 		log_print("avformat alloc failed\n");
 		return -1;
 	}
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	ic->interrupt_callback.callback = decode_interrupt_cb;
 	ic->interrupt_callback.opaque = (void *)player;
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	err = avformat_open_input(&ic, filename, NULL, NULL);
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	if(err < 0){
 		log_print("%s open input failed: %d\n", filename, err);
 		return -1;
 	}
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
 	stream_component_open(player, stream_index);
-	pthread_t pt;
+	pthread_t pt, pt2;
 
+	printf("[%s %d]\n",__FILE__,__LINE__);
 	pthread_create(&pt, NULL, read_thread, (void *)player);
-	SDL_CreateThread(decode_thread, "decoder", (void *)player);
+	pthread_create(&pt2, NULL, decode_thread, (void *)player);
+	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
 }
 
 int main(int argc, void **argv)
