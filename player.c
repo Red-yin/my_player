@@ -1,6 +1,7 @@
 #include "data_queue.h"
 #include <SDL2/SDL.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "libavformat/avformat.h"
 #include "log.h"
 #define FRAME_QUEUE_SIZE 16
@@ -48,22 +49,16 @@ player_ctrl *player_init()
 	}
 #endif
 	//avdevice_register_all();
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	avformat_network_init();
 	av_register_all();
-	printf("[%s %d]\n",__FILE__,__LINE__);
 
 	player_ctrl *player = (player_ctrl *)calloc(1, sizeof(player_ctrl));
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	if(player == NULL){
 		log_print("player calloc failed\n");
 		return NULL;
 	}
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	packetQueue *pq = create_packet_queue();
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
-	printf("[%s %d]\n",__FILE__,__LINE__);
 #if 1
 	SDL_AudioSpec wanted_spec, spec;
 	wanted_spec.format = AUDIO_S16SYS;
@@ -97,20 +92,32 @@ void *decode_thread(void *param)
 	}
 
 	while(1){
+		if(player->avctx == NULL){
+			log_print("avctx is NULL\n");
+			break;
+		}
 		do{
 			ret = avcodec_receive_frame(player->avctx, frame);
+			printf("[%s %d]ret: %d\n",__FILE__,__LINE__, ret);
 			if(ret >= 0){
 				frame_queue_put(player->frame_queue, frame, 0);
+			}
+			printf("[%s %d] %d %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN));
+			if(ret == AVERROR(EINVAL)){
+				log_print("avctx is not opened\n");
+				break;
 			}
 			if(ret == AVERROR_EOF){
 				//decode end of file
 			}
 		}while(ret != AVERROR(EAGAIN));
 
+			printf("[%s %d]\n",__FILE__,__LINE__);
 		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) >= 0){
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
 				packet_pending = 1;
 			}else{
+				printf("avcodec send...\n");
 				packet_pending = 0;
 				av_packet_unref(&pkt);
 			}
@@ -131,12 +138,15 @@ int stream_component_open(player_ctrl *player, int stream_index)
 	if(stream_index < 0 || stream_index >= ic->nb_streams)
 		return -1;
 
-	avctx = avcodec_alloc_context3(NULL);
+	AVCodec *vc = avcodec_find_decoder(ic->streams[stream_index]->codecpar->codec_id);
+	avctx = avcodec_alloc_context3(vc);
 	if(avctx == NULL){
+		log_print("avcocde_alloc_context3 failed\n");
 		return AVERROR(ENOMEM);
 	}
 	ret = avcodec_parameters_to_context(avctx, ic->streams[stream_index]->codecpar);
 	if(ret < 0){
+		log_print("avcodec_parameters_to_context failed\n");
 		goto fail;
 	}
 	avctx->pkt_timebase = ic->streams[stream_index]->time_base;
@@ -151,6 +161,7 @@ int stream_component_open(player_ctrl *player, int stream_index)
 
 	return 0;
 fail:
+	log_print("[%s %d] open faild\n",__FILE__,__LINE__);
 	avcodec_free_context(&avctx);
 	return -1;
 }
@@ -195,39 +206,36 @@ int player_start(player_ctrl *player)
 	if(player == NULL){
 		return -1;
 	}
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	int err, stream_index;
 	AVFormatContext *ic = avformat_alloc_context();
 	if(ic == NULL){
 		log_print("avformat alloc failed\n");
 		return -1;
 	}
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	ic->interrupt_callback.callback = decode_interrupt_cb;
 	ic->interrupt_callback.opaque = (void *)player;
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	err = avformat_open_input(&ic, filename, NULL, NULL);
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	if(err < 0){
 		log_print("%s open input failed: %d\n", filename, err);
 		return -1;
 	}
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
-	stream_component_open(player, stream_index);
+	stream_component_open(player, 0);
 	pthread_t pt, pt2;
 
-	printf("[%s %d]\n",__FILE__,__LINE__);
 	pthread_create(&pt, NULL, read_thread, (void *)player);
-	pthread_create(&pt2, NULL, decode_thread, (void *)player);
-	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
+	//pthread_create(&pt2, NULL, decode_thread, (void *)player);
+	SDL_CreateThread(decode_thread, "decoder", (void *)player);
 }
 
 int main(int argc, void **argv)
 {
 	player_ctrl *player = player_init();
 	player_start(player);
+
+	while(1)
+		sleep(100000);
 
 	return 0;
 }

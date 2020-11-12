@@ -16,7 +16,7 @@ packetQueue *create_packet_queue(void)
 		return NULL;
 	}
 	q->first_pkt = q->last_pkt = NULL;
-	pthread_mutex_lock(&q->mutex);
+	pthread_mutex_init(&q->mutex, NULL);
 	pthread_cond_init(&q->cond, NULL);
 	return q;
 }
