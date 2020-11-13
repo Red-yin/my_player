@@ -240,7 +240,12 @@ int player_start(player_ctrl *player)
 	}
 
 	//if no this call, mp3 decoder report "Header missing"
-	avformat_find_stream_info(ic, NULL);
+	err = avformat_find_stream_info(ic, NULL);
+	if(err < 0){
+		log_print("could not find codec parameters\n");
+		return -1;
+	}
+
 #if 0
 	int i;
 	for(i = 0; i < ic->nb_streams; i++){
