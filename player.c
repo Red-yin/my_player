@@ -30,6 +30,7 @@ void sdl_audio_callback(void *param, Uint8 *stream, int len)
 			frame_queue_set_pkt_queue(fq, NULL);
 			continue;
 		}
+		log_print("file position: %ld\n", frame->pkt_pos);
 		int data_len = av_samples_get_buffer_size(NULL, frame->channels, frame->nb_samples, frame->format, 1);
 		printf("frame len: %d\n", data_len);
 		int len1 = data_len < len ? data_len: len;
@@ -101,25 +102,34 @@ void *decode_thread(void *param)
 			printf("[%s %d]ret: %d\n",__FILE__,__LINE__, ret);
 			if(ret >= 0){
 				frame_queue_put(player->frame_queue, frame, 0);
+			}else{
+				printf("[%s %d] %d %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN));
 			}
-			printf("[%s %d] %d %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN));
 			if(ret == AVERROR(EINVAL)){
 				log_print("avctx is not opened\n");
 				break;
 			}
 			if(ret == AVERROR_EOF){
-				//decode end of file
+				log_print("codec end of file\n");
+				break;
 			}
 		}while(ret != AVERROR(EAGAIN));
 
-			printf("[%s %d]\n",__FILE__,__LINE__);
-		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) >= 0){
+		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, !player->eof) > 0){
+			log_print("packet position: %ld\n", pkt.pos);
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
+				printf("[%s %d]\n",__FILE__,__LINE__);
 				packet_pending = 1;
 			}else{
 				printf("avcodec send...\n");
 				packet_pending = 0;
 				av_packet_unref(&pkt);
+			}
+		}else{
+			printf("[%s %d] %d, ----%u\n",__FILE__,__LINE__, packet_pending, (unsigned)(player->eof));
+			if(packet_pending == 0 && (player->eof & 0x1)){
+				log_print("packet end of file\n");
+				break;
 			}
 		}
 	}
@@ -138,25 +148,32 @@ int stream_component_open(player_ctrl *player, int stream_index)
 	if(stream_index < 0 || stream_index >= ic->nb_streams)
 		return -1;
 
-	AVCodec *vc = avcodec_find_decoder(ic->streams[stream_index]->codecpar->codec_id);
-	avctx = avcodec_alloc_context3(vc);
+	avctx = avcodec_alloc_context3(NULL);
 	if(avctx == NULL){
 		log_print("avcocde_alloc_context3 failed\n");
 		return AVERROR(ENOMEM);
 	}
 	ret = avcodec_parameters_to_context(avctx, ic->streams[stream_index]->codecpar);
+	printf("[%s %d]samples: %d channels: %d channel_layout: %ld\n", __FILE__, __LINE__, avctx->sample_rate, avctx->channels, avctx->channel_layout);
 	if(ret < 0){
 		log_print("avcodec_parameters_to_context failed\n");
 		goto fail;
 	}
-	avctx->pkt_timebase = ic->streams[stream_index]->time_base;
 	codec = avcodec_find_decoder(avctx->codec_id);
+	if(avcodec_open2(avctx, codec, NULL) < 0){
+		log_print("could not open codec for input stream %d", stream_index);
+		return -1;
+	}
+	player->avctx = avctx;
+
+	avctx->pkt_timebase = ic->streams[stream_index]->time_base;
 	avctx->codec_id = codec->id;
 	ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
 
 	int sample_rate = avctx->sample_rate;
 	int channels = avctx->channels;
 	uint64_t channel_layout = avctx->channel_layout;
+	log_print("sample rate: %d, channels: %d, channel_layout: %ld\n", sample_rate, channels, channel_layout);
 	player->avctx = avctx;
 
 	return 0;
@@ -189,16 +206,18 @@ void *read_thread(void *param)
 			if(ret == AVERROR_EOF || avio_feof(ic->pb)){
 				//packet_queue_put_nullpacket();
 				player->eof = 1;
-				log_print("input end...\n");
+				log_print("input end....................\n");
 				break;
 			}
 		}else{
+			log_print("packet put...\n");
 			packet_queue_put(player->pkt_queue, &pkt);
-			av_packet_unref(&pkt);
+			//av_packet_unref(&pkt);
 		}
 	}
 
 	avformat_close_input(&ic);
+	log_print("read thread end.....\n");
 }
 
 int player_start(player_ctrl *player)
@@ -219,6 +238,10 @@ int player_start(player_ctrl *player)
 		log_print("%s open input failed: %d\n", filename, err);
 		return -1;
 	}
+
+	//if no this call, mp3 decoder report "Header missing"
+	avformat_find_stream_info(ic, NULL);
+#if 0
 	int i;
 	for(i = 0; i < ic->nb_streams; i++){
 		AVStream *stream = ic->streams[i];
@@ -244,9 +267,10 @@ int player_start(player_ctrl *player)
 		}
 		player->avctx = avctx;
 	}
+#endif
 	//stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
-	//stream_component_open(player, 0);
+	stream_component_open(player, 0);
 	pthread_t pt, pt2;
 
 	pthread_create(&pt, NULL, read_thread, (void *)player);

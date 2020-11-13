@@ -138,7 +138,7 @@ frameQueue *create_frame_queue(int max, packetQueue *pkt_queue)
 	q->size = 0;
 	q->read_index = q->write_index = 0;
 	q->pkt_queue = pkt_queue;
-	pthread_mutex_lock(&q->mutex);
+	pthread_mutex_init(&q->mutex, NULL);
 	pthread_cond_init(&q->cond, NULL);
 	return q;
 }
@@ -186,6 +186,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	if(q->pkt_queue && q->pkt_queue->abort_request){
 		return -1;
 	}
+	printf("[%s %d]lock\n",__FILE__,__LINE__);
 	pthread_mutex_lock(&q->mutex);
 	while(q->size >= q->max){
 		if(block)
@@ -204,6 +205,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	q->write_index = q->write_index == q->max ? 0: q->write_index;
 	q->size++;
 	pthread_mutex_unlock(&q->mutex);
+	printf("[%s %d]unlock\n",__FILE__,__LINE__);
 	return 0;
 }
 
