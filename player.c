@@ -21,6 +21,8 @@ typedef struct player_ctrl{
 	frameQueue *frame_queue;
 }player_ctrl;
 
+
+
 void *pcm_write_thread(void *param)
 {
 	frameQueue *fq = (frameQueue *)param;
@@ -33,8 +35,18 @@ void *pcm_write_thread(void *param)
 		frame_queue_get(fq, frame, 1);
 		int data_len = frame->channels * frame->nb_samples * 2;
 		log_print("frame info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
+		log_print("linesize: %d\n", frame->linesize[0]);
+
+		if(frame->format != 1 || frame->sample_rate != 1 || frame->channels != 1 || frame->channel_layout != 1){
+		}
+
+		SwrContext *swr_ctx = swr_alloc();
+		swr_alloc_set_opts(swr_ctx, out_ch_layout, out_sample_fmt, out_sample_rate, in_ch_layout, in_sample_fmt, in_sample_rate, 0, NULL);
+		sw_init(swr_ctx);
+		sw_convert(swr_ctx, out_buf, out_samples, in_buf, in_samples);
+		swr_free(&swr_ctx);
         while (cptr > 0) {
-            err = snd_pcm_writei(handle, frame->extended_data, data_len);
+            err = snd_pcm_writei(handle, frame->extended_data, frame->linesize[0]);
             if (err == -EAGAIN)
                 continue;
             if (err < 0) {
