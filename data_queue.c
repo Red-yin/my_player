@@ -186,7 +186,6 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	if(q->pkt_queue && q->pkt_queue->abort_request){
 		return -1;
 	}
-	printf("[%s %d]lock\n",__FILE__,__LINE__);
 	pthread_mutex_lock(&q->mutex);
 	while(q->size >= q->max){
 		if(block)

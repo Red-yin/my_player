@@ -1,12 +1,15 @@
 #include "data_queue.h"
-#include <SDL2/SDL.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <alsa/asoundlib.h>
 #include "libavformat/avformat.h"
+#include "libavcodec/avcodec.h"
 #include "log.h"
 #define FRAME_QUEUE_SIZE 16
 
-const char *filename = "./alarm.mp3";
+const char *filename = "./waste_time.mp3";
+int xrun_recovery(snd_pcm_t *handle, int err);
+snd_pcm_t *pcm_init();
 
 typedef struct player_ctrl{
 	int stop:1;
@@ -18,37 +21,35 @@ typedef struct player_ctrl{
 	frameQueue *frame_queue;
 }player_ctrl;
 
-#if 1
-SDL_AudioDeviceID audio_dev;
-void sdl_audio_callback(void *param, Uint8 *stream, int len)
+void *pcm_write_thread(void *param)
 {
 	frameQueue *fq = (frameQueue *)param;
+    signed short *ptr;
+    int err, cptr;
+
+    snd_pcm_t *handle = pcm_init();
 	AVFrame *frame = av_frame_alloc();
-	do{
-		if(0 > frame_queue_get(fq, frame, 1)){
-			destory_packet_queue(fq->pkt_queue);
-			frame_queue_set_pkt_queue(fq, NULL);
-			continue;
-		}
-		log_print("file position: %ld\n", frame->pkt_pos);
-		int data_len = av_samples_get_buffer_size(NULL, frame->channels, frame->nb_samples, frame->format, 1);
-		printf("frame len: %d\n", data_len);
-		int len1 = data_len < len ? data_len: len;
-		SDL_MixAudioFormat(stream, (uint8_t *)frame->data[0], AUDIO_S16SYS, len1, SDL_MIX_MAXVOLUME);
-	}while(1);
+	while(1){
+		frame_queue_get(fq, frame, 1);
+		int data_len = frame->channels * frame->nb_samples * 2;
+		log_print("frame info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
+        while (cptr > 0) {
+            err = snd_pcm_writei(handle, frame->extended_data, data_len);
+            if (err == -EAGAIN)
+                continue;
+            if (err < 0) {
+                if (xrun_recovery(handle, err) < 0) {
+                    printf("Write error: %s\n", snd_strerror(err));
+                    exit(EXIT_FAILURE);
+                }
+                break;  /* skip one period */
+            }
+        }
+	}
 }
-#endif
 
 player_ctrl *player_init()
 {
-#if 1
-	int flags = 0;
-	flags = SDL_INIT_AUDIO;
-	if(0 != SDL_Init(flags)){
-		log_print("SDL_Init failed\n");
-		return NULL;
-	}
-#endif
 	//avdevice_register_all();
 	avformat_network_init();
 	av_register_all();
@@ -60,21 +61,9 @@ player_ctrl *player_init()
 	}
 	packetQueue *pq = create_packet_queue();
 	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
-#if 1
-	SDL_AudioSpec wanted_spec, spec;
-	wanted_spec.format = AUDIO_S16SYS;
-	wanted_spec.silence = 0;
-	wanted_spec.samples = 2048;
-	wanted_spec.channels = 2;
-	wanted_spec.freq = 44100;
-	wanted_spec.callback = sdl_audio_callback;
-	wanted_spec.userdata = (void *)fq;
-	audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
-#endif
-
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
-#if 0
+#if 1
 	pthread_t pt;
 	pthread_create(&pt, NULL, pcm_write_thread, (void *)fq);
 #endif
@@ -210,7 +199,12 @@ void *read_thread(void *param)
 				break;
 			}
 		}else{
-			log_print("packet put...\n");
+			log_print("packet put %d ...\n", player->pkt_queue->nb_packets);
+			log_print("packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
+			AVBufferRef *buf = pkt.buf;
+			if(buf){
+				log_print("buffer size: %d, ref number: %d\n", buf->size, *(int *)((int *)buf->buffer + sizeof(char *) + sizeof(int)));
+			}
 			packet_queue_put(player->pkt_queue, &pkt);
 			//av_packet_unref(&pkt);
 		}
@@ -279,12 +273,16 @@ int player_start(player_ctrl *player)
 	pthread_t pt, pt2;
 
 	pthread_create(&pt, NULL, read_thread, (void *)player);
-	//pthread_create(&pt2, NULL, decode_thread, (void *)player);
-	SDL_CreateThread(decode_thread, "decoder", (void *)player);
+	pthread_create(&pt2, NULL, decode_thread, (void *)player);
+	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
 }
 
 int main(int argc, void **argv)
 {
+	if(argc > 1){
+		filename = argv[1];
+		log_print("filename: %s\n", filename);
+	}
 	player_ctrl *player = player_init();
 	player_start(player);
 
