@@ -1,6 +1,7 @@
 #include "data_queue.h"
 #include <pthread.h>
 #include <semaphore.h>
+#include <libswresample/swresample.h>
 #include <unistd.h>
 #include <alsa/asoundlib.h>
 #include "libavformat/avformat.h"
@@ -73,6 +74,7 @@ void *pcm_write_thread(void *param)
 
     snd_pcm_t *handle = pcm_init();
 	AVFrame *frame = av_frame_alloc();
+	uint8_t *out_buf;
 	while(1){
 		frame_queue_get(fq, frame, 1);
 		int data_len = frame->channels * frame->nb_samples * 2;
@@ -83,12 +85,15 @@ void *pcm_write_thread(void *param)
 		}
 
 		SwrContext *swr_ctx = swr_alloc();
-		swr_alloc_set_opts(swr_ctx, out_ch_layout, out_sample_fmt, out_sample_rate, in_ch_layout, in_sample_fmt, in_sample_rate, 0, NULL);
-		sw_init(swr_ctx);
-		sw_convert(swr_ctx, out_buf, out_samples, in_buf, in_samples);
+		swr_alloc_set_opts(swr_ctx, av_get_default_channel_layout(1), SND_PCM_FORMAT_S16, 44100, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+		swr_init(swr_ctx);
+		int out_len = av_samples_get_buffer_size(NULL, 1, frame->nb_samples, SND_PCM_FORMAT_S16, 0);
+		out_buf = (char *)malloc(out_len);
+		log_print("swr out len: %d\n", out_len);
+		swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
 		swr_free(&swr_ctx);
-        while (cptr > 0) {
-            err = snd_pcm_writei(handle, frame->extended_data, frame->linesize[0]);
+        while (out_len > 0) {
+            err = snd_pcm_writei(handle, out_buf, out_len);
             if (err == -EAGAIN)
                 continue;
             if (err < 0) {
@@ -116,7 +121,7 @@ void task_wait(play_task *task)
 	if(task == NULL){
 		return;
 	}
-	if (sem_wait(&sem) != 0){
+	if (sem_wait(&task->sem) != 0){
 		log_print("sem error\n");
 		return;
 	}
@@ -127,6 +132,7 @@ void *decode_thread(void *param)
 	player_ctrl *player = (player_ctrl *)param;
 	int got_frame, packet_pending = 0, ret;
 	AVPacket pkt;
+	play_task *task = NULL;
 	AVFrame *frame = av_frame_alloc();
 	if(frame == NULL){
 		log_print("av_frame_alloc failed\n");
@@ -136,7 +142,7 @@ void *decode_thread(void *param)
 	while(1){
 		if(player->avctx == NULL){
 			log_print("avctx is NULL\n");
-			break;
+			continue;
 		}
 		do{
 			ret = avcodec_receive_frame(player->avctx, frame);
@@ -156,7 +162,7 @@ void *decode_thread(void *param)
 			}
 		}while(ret != AVERROR(EAGAIN));
 
-		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, !player->eof) > 0){
+		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) > 0){
 			log_print("packet position: %ld\n", pkt.pos);
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
 				printf("[%s %d]\n",__FILE__,__LINE__);
@@ -167,7 +173,7 @@ void *decode_thread(void *param)
 				av_packet_unref(&pkt);
 			}
 		}else{
-			printf("[%s %d] %d, ----%u\n",__FILE__,__LINE__, packet_pending, (unsigned)(player->eof));
+			printf("[%s %d] %d, ----\n",__FILE__,__LINE__, packet_pending);
 			if(packet_pending == 0){
 				if(task->stop){
 					clean_frame_queue(player->frame_queue);
@@ -285,6 +291,7 @@ int player_start(player_ctrl *player)
 	if(player == NULL){
 		return -1;
 	}
+#if 0
 	int err, stream_index;
 	AVFormatContext *ic = avformat_alloc_context();
 	if(ic == NULL){
@@ -336,11 +343,13 @@ int player_start(player_ctrl *player)
 	//stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 	player->ic = ic;
 	stream_component_open(player, 0);
+#endif
 
 	pthread_t pt, pt2;
 	pthread_create(&pt, NULL, read_thread, (void *)player);
 	pthread_create(&pt2, NULL, decode_thread, (void *)player);
 	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
+	new_task(player, filename);
 }
 
 int player_add_task(player_ctrl *player, const char *url)
@@ -465,6 +474,16 @@ int player_command_append(player_ctrl *player, const char *url)
 	return 0;
 }
 
+int destory_task(play_task *task)
+{
+	if(task == NULL){
+		return -1;
+	}
+	sem_destroy(&task->sem);
+	free(task);
+	return 0;
+}
+
 int new_task(player_ctrl *player, const char *url)
 {
 	if(player == NULL || url == NULL){
@@ -528,7 +547,7 @@ void *player_task_handle(void *param)
 			log_print("url calloc failed\n");
 			exit(1);
 		}
-		memcpy(url, list->current->url);
+		memcpy(url, list->current->url, strlen(list->current->url));
 		pthread_mutex_unlock(&list->mutex);
 
 		new_task(player, url);

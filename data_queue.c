@@ -115,6 +115,15 @@ int packet_queue_get(packetQueue *q, AVPacket *pkt, int block)
 	return ret;
 }
 
+int packet_queue_signal(packetQueue *q)
+{
+	if(q == NULL){
+		return -1;
+	}
+	pthread_cond_signal(&q->cond);
+	return 0;
+}
+
 frameQueue *create_frame_queue(int max, packetQueue *pkt_queue)
 {
 	int i;
