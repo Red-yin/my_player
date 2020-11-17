@@ -75,6 +75,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt)
 	q->nb_packets++;
 	q->size += pkt1->pkt.size + sizeof(*pkt1);
 	pthread_mutex_unlock(&q->mutex);
+	pthread_cond_signal(&q->cond);
 	return 0;
 }
 
@@ -204,7 +205,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	q->write_index = q->write_index == q->max ? 0: q->write_index;
 	q->size++;
 	pthread_mutex_unlock(&q->mutex);
-	printf("[%s %d]unlock\n",__FILE__,__LINE__);
+	pthread_cond_signal(&q->cond);
 	return 0;
 }
 
