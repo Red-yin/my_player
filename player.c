@@ -76,9 +76,10 @@ void *pcm_write_thread(void *param)
 	AVFrame *frame = av_frame_alloc();
 	uint8_t *out_buf;
 	while(1){
+		log_print("frame get before\n");
 		frame_queue_get(fq, frame, 1);
 		int data_len = frame->channels * frame->nb_samples * 2;
-		log_print("frame info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
+		log_print("frame get info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
 		log_print("linesize: %d\n", frame->linesize[0]);
 
 		if(frame->format != 1 || frame->sample_rate != 1 || frame->channels != 1 || frame->channel_layout != 1){
@@ -91,9 +92,13 @@ void *pcm_write_thread(void *param)
 		out_buf = (char *)malloc(out_len);
 		log_print("swr out len: %d\n", out_len);
 		swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
+		log_print("[%s %d]\n", __FILE__, __LINE__);
 		swr_free(&swr_ctx);
+#if 0
         while (out_len > 0) {
+		log_print("[%s %d]\n", __FILE__, __LINE__);
             err = snd_pcm_writei(handle, out_buf, out_len);
+		log_print("[%s %d] err: %d\n", __FILE__, __LINE__, err);
             if (err == -EAGAIN)
                 continue;
             if (err < 0) {
@@ -103,7 +108,10 @@ void *pcm_write_thread(void *param)
                 }
                 break;  /* skip one period */
             }
+			out_len -= err;
+			log_print("pcm write left: %d\n", out_len);
         }
+#endif
 	}
 }
 
@@ -146,11 +154,11 @@ void *decode_thread(void *param)
 		}
 		do{
 			ret = avcodec_receive_frame(player->avctx, frame);
-			printf("[%s %d]ret: %d\n",__FILE__,__LINE__, ret);
 			if(ret >= 0){
+				printf("[%s %d]frame put ret: %d\n",__FILE__,__LINE__, ret);
 				frame_queue_put(player->frame_queue, frame, 0);
 			}else{
-				printf("[%s %d] %d %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN));
+				printf("[%s %d] %d %d ret: %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN), ret);
 			}
 			if(ret == AVERROR(EINVAL)){
 				log_print("avctx is not opened\n");
@@ -163,7 +171,7 @@ void *decode_thread(void *param)
 		}while(ret != AVERROR(EAGAIN));
 
 		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) > 0){
-			log_print("packet position: %ld\n", pkt.pos);
+			log_print("packet get position: %ld\n", pkt.pos);
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
 				printf("[%s %d]\n",__FILE__,__LINE__);
 				packet_pending = 1;
@@ -271,8 +279,8 @@ void *read_thread(void *param)
 				continue;
 			}
 		}else{
+			log_print("av read frame packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
 			log_print("packet put %d ...\n", player->pkt_queue->nb_packets);
-			log_print("packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
 			AVBufferRef *buf = pkt.buf;
 			if(buf){
 				log_print("buffer size: %d, ref number: %d\n", buf->size, *(int *)((int *)buf->buffer + sizeof(char *) + sizeof(int)));

@@ -225,6 +225,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 	}
 	pthread_mutex_lock(&q->mutex);
 	if(q->pkt_queue && q->pkt_queue->abort_request){
+		pthread_mutex_unlock(&q->mutex);
 		return -1;
 	}
 	while(q->size <= 0){
@@ -232,8 +233,9 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 			pthread_mutex_unlock(&q->mutex);
 			return -1;
 		}
-		if(block)
+		if(block){
 			pthread_cond_wait(&q->cond, &q->mutex);
+		}
 		else{
 			pthread_mutex_unlock(&q->mutex);
 			return 1;
