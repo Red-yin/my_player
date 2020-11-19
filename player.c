@@ -108,7 +108,7 @@ void *pcm_write_thread(void *param)
 		log_print("swr out len: %d\n", out_len);
 		swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
 		log_print("[%s %d]\n", __FILE__, __LINE__);
-#if 0
+#if 1
         while (out_len > 0) {
 		log_print("[%s %d]\n", __FILE__, __LINE__);
             err = snd_pcm_writei(handle, out_buf, out_len);
@@ -143,6 +143,7 @@ void task_wait(play_task *task)
 	if(task == NULL){
 		return;
 	}
+	log_print("%s\n", __func__);
 	if (sem_wait(&task->sem) != 0){
 		log_print("sem error\n");
 		return;
@@ -162,11 +163,7 @@ void *decode_thread(void *param)
 	}
 
 	while(1){
-		if(player->avctx == NULL){
-			log_print("avctx is NULL\n");
-			continue;
-		}
-		do{
+		while(player->avctx && ret != AVERROR(EAGAIN)){
 			ret = avcodec_receive_frame(player->avctx, frame);
 			if(ret >= 0){
 				printf("[%s %d]frame put ret: %d\n",__FILE__,__LINE__, ret);
@@ -182,12 +179,14 @@ void *decode_thread(void *param)
 				log_print("codec end of file\n");
 				break;
 			}
-		}while(ret != AVERROR(EAGAIN));
+		}
 
+		log_print("%s wait...\n", __func__);
 		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) > 0){
 			log_print("packet get position: %ld\n", pkt.pos);
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
 				printf("[%s %d]\n",__FILE__,__LINE__);
+				sleep(2);
 				packet_pending = 1;
 			}else{
 				printf("avcodec send...\n");
@@ -195,7 +194,6 @@ void *decode_thread(void *param)
 				av_packet_unref(&pkt);
 			}
 		}else{
-			printf("[%s %d] %d, ----\n",__FILE__,__LINE__, packet_pending);
 			if(packet_pending == 0){
 				if(task->stop){
 					clean_frame_queue(player->frame_queue);
@@ -271,13 +269,13 @@ void *read_thread(void *param)
 	AVPacket pkt;
 	while(1){
 		if(task == NULL || task->stop || task->eof){
-			log_print("player ctrl wait...\n");
 			if(task && task->stop){
 				clean_packet_queue(player->pkt_queue);
 				packet_queue_signal(player->pkt_queue);
 			}
 			//TODO: wait
 			pthread_mutex_lock(&player->mutex);
+			log_print("%s wait...\n", __func__);
 			pthread_cond_wait(&player->cond, &player->mutex);
 			//after wait
 			ic = player->ic;
@@ -374,6 +372,26 @@ int player_start(player_ctrl *player)
 	new_task(player, filename);
 }
 
+int player_clean_task(play_list_ctrl *list)
+{
+	if(list == NULL || list->first == NULL){
+		return -1;
+	}
+	pthread_mutex_lock(&list->mutex);
+	play_list *node = list->first;
+	play_list *next = NULL;
+	while(node){
+		next = node->next;
+		play_list_destory(node);
+		node = next;
+	}
+	list->first = NULL;
+	list->last = NULL;
+	list->current = NULL;
+	pthread_mutex_unlock(&list->mutex);
+	return 0;
+}
+
 int player_add_task(player_ctrl *player, const char *url)
 {
 	if(player == NULL || player->list == NULL || url == NULL || strlen(url) <= 0){
@@ -390,6 +408,7 @@ int player_add_task(player_ctrl *player, const char *url)
 		free(node);
 		return -1;
 	}
+	strcpy(node->url, url);
 	play_list_ctrl *list = player->list;
 	pthread_mutex_lock(&list->mutex);
 	if(list->first == NULL){
@@ -501,6 +520,7 @@ int destory_task(play_task *task)
 	if(task == NULL){
 		return -1;
 	}
+	log_print("%s\n", __func__);
 	sem_destroy(&task->sem);
 	free(task);
 	return 0;
@@ -528,7 +548,7 @@ int new_task(player_ctrl *player, const char *url)
 	ic->interrupt_callback.opaque = (void *)task;
 	err = avformat_open_input(&ic, url, NULL, NULL);
 	if(err < 0){
-		log_print("%s open input failed: %d\n", filename, err);
+		log_print("%s open input failed: %d\n", url, err);
 		return -1;
 	}
 
@@ -553,6 +573,7 @@ void *player_task_handle(void *param)
 	while(1){
 		pthread_mutex_lock(&list->mutex);
 		if(list->first == NULL && list->last == NULL){
+			log_print("%s wait...\n", __func__);
 			pthread_cond_wait(&list->cond, &list->mutex);
 		}
 		if(list->current == NULL){
@@ -562,6 +583,7 @@ void *player_task_handle(void *param)
 		}
 		if(list->current == NULL){
 			pthread_mutex_unlock(&list->mutex);
+			player_clean_task(list);
 			continue;
 		}
 		url = (char *)calloc(1, strlen(list->current->url) + 1);
@@ -571,6 +593,7 @@ void *player_task_handle(void *param)
 		}
 		memcpy(url, list->current->url, strlen(list->current->url));
 		pthread_mutex_unlock(&list->mutex);
+		log_print("%s url: %s", __func__, url);
 
 		new_task(player, url);
 		free(url);
@@ -633,11 +656,15 @@ int main(int argc, void **argv)
 		log_print("filename: %s\n", filename);
 	}
 	player_ctrl *player = player_init();
-	player_start(player);
+//	player_start(player);
 
+	char buf[64];
 	while(1){
 		printf("cli>");
-		sleep(10000);
+		memset(buf, 0, sizeof(buf));
+		scanf("%s", buf);
+		printf("get: %s\n", buf);
+		player_command_append(player, buf);
 	}
 
 	return 0;
