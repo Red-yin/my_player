@@ -10,6 +10,7 @@
 #include <alsa/asoundlib.h>
 #include <sys/time.h>
 #include <math.h>
+#include "pcm.h"
 static char *device = "plughw:0,0";         /* playback device */
 static snd_pcm_format_t format = SND_PCM_FORMAT_S16;    /* sample format */
 static unsigned int rate = 44100;           /* stream rate */
@@ -691,14 +692,93 @@ static struct transfer_method transfer_methods[] = {
     { NULL, SND_PCM_ACCESS_RW_INTERLEAVED, NULL }
 };
 
-snd_pcm_t *pcm_init()
+int set_pcm_hwparams(snd_pcm_t *handle, AudioParams *audio, snd_pcm_access_t access)
+{
+    unsigned int rrate;
+    snd_pcm_uframes_t size;
+    int err, dir;
+    snd_pcm_hw_params_t *params;
+    snd_pcm_hw_params_alloca(&params);
+    /* choose all parameters */
+    err = snd_pcm_hw_params_any(handle, params);
+    if (err < 0) {
+        printf("Broken configuration for playback: no configurations available: %s\n", snd_strerror(err));
+        return err;
+    }
+    /* set hardware resampling */
+    err = snd_pcm_hw_params_set_rate_resample(handle, params, resample);
+    if (err < 0) {
+        printf("Resampling setup failed for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    /* set the interleaved read/write format */
+    err = snd_pcm_hw_params_set_access(handle, params, access);
+    if (err < 0) {
+        printf("Access type not available for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    /* set the sample format */
+    err = snd_pcm_hw_params_set_format(handle, params, audio->fmt);
+    if (err < 0) {
+        printf("Sample format not available for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    /* set the count of channels */
+    err = snd_pcm_hw_params_set_channels(handle, params, audio->channels);
+    if (err < 0) {
+        printf("Channels count (%u) not available for playbacks: %s\n", audio->channels, snd_strerror(err));
+        return err;
+    }
+    /* set the stream rate */
+    rrate = audio->freq;
+    err = snd_pcm_hw_params_set_rate_near(handle, params, &rrate, 0);
+    if (err < 0) {
+        printf("Rate %uHz not available for playback: %s\n", audio->freq, snd_strerror(err));
+        return err;
+    }
+    if (rrate != audio->freq) {
+        printf("Rate doesn't match (requested %uHz, get %iHz)\n", audio->freq, err);
+        return -EINVAL;
+    }
+    /* set the buffer time */
+    err = snd_pcm_hw_params_set_buffer_time_near(handle, params, &buffer_time, &dir);
+    if (err < 0) {
+        printf("Unable to set buffer time %u for playback: %s\n", buffer_time, snd_strerror(err));
+        return err;
+    }
+    err = snd_pcm_hw_params_get_buffer_size(params, &size);
+    if (err < 0) {
+        printf("Unable to get buffer size for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    buffer_size = size;
+    /* set the period time */
+    err = snd_pcm_hw_params_set_period_time_near(handle, params, &period_time, &dir);
+    if (err < 0) {
+        printf("Unable to set period time %u for playback: %s\n", period_time, snd_strerror(err));
+        return err;
+    }
+    err = snd_pcm_hw_params_get_period_size(params, &size, &dir);
+    if (err < 0) {
+        printf("Unable to get period size for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    period_size = size;
+    /* write the parameters to device */
+    err = snd_pcm_hw_params(handle, params);
+    if (err < 0) {
+        printf("Unable to set hw params for playback: %s\n", snd_strerror(err));
+        return err;
+    }
+    return 0;
+}
+
+snd_pcm_t *pcm_init(AudioParams *audio)
 {
     int err;
     int method = 0;
     snd_pcm_t *handle;
-    snd_pcm_hw_params_t *hwparams;
     snd_pcm_sw_params_t *swparams;
-    snd_pcm_hw_params_alloca(&hwparams);
     snd_pcm_sw_params_alloca(&swparams);
  
     if ((err = snd_pcm_open(&handle, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0) {
@@ -706,7 +786,7 @@ snd_pcm_t *pcm_init()
         return NULL;
     }
     
-    if ((err = set_hwparams(handle, hwparams, transfer_methods[method].access)) < 0) {
+    if ((err = set_pcm_hwparams(handle, audio, transfer_methods[method].access)) < 0) {
         printf("Setting of hwparams failed: %s\n", snd_strerror(err));
         exit(EXIT_FAILURE);
     }

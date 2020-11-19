@@ -6,6 +6,7 @@
 #include <alsa/asoundlib.h>
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
+#include "pcm.h"
 #include "log.h"
 #define FRAME_QUEUE_SIZE 16
 
@@ -59,21 +60,23 @@ typedef struct player_ctrl{
 	AVCodecContext *avctx;
 	packetQueue *pkt_queue;
 	frameQueue *frame_queue;
+	AudioParams audio_src;
+	AudioParams audio_dst;
 
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 }player_ctrl;
 
-
-
 void *pcm_write_thread(void *param)
 {
-	frameQueue *fq = (frameQueue *)param;
+	player_ctrl *player = (player_ctrl *)param;
+	frameQueue *fq = (frameQueue *)player->frame_queue;
     signed short *ptr;
     int err, cptr;
 
-    snd_pcm_t *handle = pcm_init();
+    snd_pcm_t *handle = pcm_init(&player->audio_dst);
 	AVFrame *frame = av_frame_alloc();
+	SwrContext *swr_ctx = NULL;
 	uint8_t *out_buf;
 	while(1){
 		log_print("frame get before\n");
@@ -82,18 +85,29 @@ void *pcm_write_thread(void *param)
 		log_print("frame get info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
 		log_print("linesize: %d\n", frame->linesize[0]);
 
-		if(frame->format != 1 || frame->sample_rate != 1 || frame->channels != 1 || frame->channel_layout != 1){
+		if(frame->format != player->audio_src.fmt || frame->sample_rate != player->audio_src.freq || frame->channels != player->audio_src.channels || frame->channel_layout != player->audio_src.channel_layout){
+			if(swr_ctx){
+				swr_free(&swr_ctx);
+			}
+			swr_ctx = swr_alloc_set_opts(NULL, player->audio_dst.channel_layout, player->audio_dst.fmt, player->audio_dst.freq, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+			if(swr_ctx == NULL || swr_init(swr_ctx) < 0){
+                log_print("Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+                    frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->channels,
+                    player->audio_dst.freq, av_get_sample_fmt_name(player->audio_dst.fmt), player->audio_dst.channels);
+				swr_free(&swr_ctx);
+				continue; 
+			}
+			player->audio_src.fmt = frame->format;
+			player->audio_src.freq = frame->sample_rate;
+			player->audio_src.channels = frame->channels;
+			player->audio_src.channel_layout = frame->channel_layout;
 		}
 
-		SwrContext *swr_ctx = swr_alloc();
-		swr_alloc_set_opts(swr_ctx, av_get_default_channel_layout(1), SND_PCM_FORMAT_S16, 44100, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
-		swr_init(swr_ctx);
 		int out_len = av_samples_get_buffer_size(NULL, 1, frame->nb_samples, SND_PCM_FORMAT_S16, 0);
 		out_buf = (char *)malloc(out_len);
 		log_print("swr out len: %d\n", out_len);
 		swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
 		log_print("[%s %d]\n", __FILE__, __LINE__);
-		swr_free(&swr_ctx);
 #if 0
         while (out_len > 0) {
 		log_print("[%s %d]\n", __FILE__, __LINE__);
@@ -566,6 +580,14 @@ void *player_task_handle(void *param)
 	}
 }
 
+int alsa_params_init(AudioParams *audio)
+{
+    audio->freq = 44100;
+    audio->channels = 2;
+    audio->fmt = SND_PCM_FORMAT_S16;
+	return 0;
+}
+
 player_ctrl *player_init()
 {
 	//avdevice_register_all();
@@ -588,10 +610,13 @@ player_ctrl *player_init()
 	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
+	alsa_params_init(&player->audio_dst);
 #if 1
-	pthread_t pt, pt1;
-	pthread_create(&pt, NULL, pcm_write_thread, (void *)fq);
-	pthread_create(&pt1, NULL, player_task_handle, (void *)player);
+	pthread_t pt0, pt1, pt2, pt3;
+	pthread_create(&pt0, NULL, player_task_handle, (void *)player);
+	pthread_create(&pt1, NULL, pcm_write_thread, (void *)player);
+	pthread_create(&pt2, NULL, read_thread, (void *)player);
+	pthread_create(&pt3, NULL, decode_thread, (void *)player);
 #endif
 	return player;
 fail:
