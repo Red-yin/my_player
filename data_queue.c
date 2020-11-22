@@ -158,6 +158,7 @@ void clean_frame_queue(frameQueue *q)
 	if(q == NULL){
 		return;
 	}
+	log_print("%s .....\n", __func__);
 	int i;
 	pthread_mutex_lock(&q->mutex);
 	if(q->queue){
@@ -213,6 +214,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	q->write_index++;
 	q->write_index = q->write_index == q->max ? 0: q->write_index;
 	q->size++;
+	log_print("%s pos: %ld.....\n", __func__, frame->pkt_pos);
 	pthread_mutex_unlock(&q->mutex);
 	pthread_cond_signal(&q->cond);
 	return 0;
@@ -228,6 +230,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 		pthread_mutex_unlock(&q->mutex);
 		return -1;
 	}
+	log_print("%s size: %d.....\n", __func__, q->size);
 	while(q->size <= 0){
 		if(q->pkt_queue && q->pkt_queue->abort_request || q->pkt_queue->eof){
 			pthread_mutex_unlock(&q->mutex);
@@ -247,6 +250,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 	q->read_index = q->read_index == q->max ? 0: q->read_index;
 	q->size--;
 	pthread_mutex_unlock(&q->mutex);
+	pthread_cond_signal(&q->cond);
 
 	return 0;
 }

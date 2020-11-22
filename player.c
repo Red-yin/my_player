@@ -71,29 +71,29 @@ void *pcm_write_thread(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
 	frameQueue *fq = (frameQueue *)player->frame_queue;
-    signed short *ptr;
-    int err, cptr;
+	signed short *ptr;
+	int err, cptr;
 
-    snd_pcm_t *handle = pcm_init(&player->audio_dst);
+	snd_pcm_t *handle = pcm_init(&player->audio_dst);
 	AVFrame *frame = av_frame_alloc();
 	SwrContext *swr_ctx = NULL;
-	uint8_t *out_buf;
+	uint8_t *out_buf = av_malloc(1024*16);
 	while(1){
-		log_print("frame get before\n");
+		log_print("frame get before!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
 		frame_queue_get(fq, frame, 1);
-		int data_len = frame->channels * frame->nb_samples * 2;
-		log_print("frame get info:len: %d channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", data_len, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
-		log_print("linesize: %d\n", frame->linesize[0]);
+		//frame->format = 1;
+		log_print("frame get info:len: %d, pos: %ld, channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", frame->linesize[0], frame->pkt_pos, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
 
+		printf("frame format: %d, channel_layout: %ld, sample_rate: %d, swr format: %d, channel_layout: %ld, sample_rate: %d\n", frame->format, frame->channel_layout, frame->sample_rate, player->audio_src.fmt, player->audio_src.channel_layout, player->audio_src.freq);
 		if(frame->format != player->audio_src.fmt || frame->sample_rate != player->audio_src.freq || frame->channels != player->audio_src.channels || frame->channel_layout != player->audio_src.channel_layout){
 			if(swr_ctx){
 				swr_free(&swr_ctx);
 			}
-			swr_ctx = swr_alloc_set_opts(NULL, player->audio_dst.channel_layout, player->audio_dst.fmt, player->audio_dst.freq, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+			swr_ctx = swr_alloc_set_opts(NULL, av_get_default_channel_layout(player->audio_dst.channels), player->audio_dst.fmt, player->audio_dst.freq, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
 			if(swr_ctx == NULL || swr_init(swr_ctx) < 0){
-                log_print("Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
-                    frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->channels,
-                    player->audio_dst.freq, av_get_sample_fmt_name(player->audio_dst.fmt), player->audio_dst.channels);
+				log_print("Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+						frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->channels,
+						player->audio_dst.freq, av_get_sample_fmt_name(player->audio_dst.fmt), player->audio_dst.channels);
 				swr_free(&swr_ctx);
 				continue; 
 			}
@@ -103,29 +103,33 @@ void *pcm_write_thread(void *param)
 			player->audio_src.channel_layout = frame->channel_layout;
 		}
 
-		int out_len = av_samples_get_buffer_size(NULL, 1, frame->nb_samples, SND_PCM_FORMAT_S16, 0);
-		out_buf = (char *)malloc(out_len);
-		log_print("swr out len: %d\n", out_len);
-		swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
-		log_print("[%s %d]\n", __FILE__, __LINE__);
+		int out_len = av_samples_get_buffer_size(NULL, player->audio_dst.channels, frame->nb_samples, player->audio_dst.fmt, 0);
+		memset(out_buf, 0, sizeof(out_buf));
+		if(swr_ctx){
+			int len = swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
+			log_print("swr out len: %d, swr len: %d\n", out_len, len);
 #if 1
-        while (out_len > 0) {
-		log_print("[%s %d]\n", __FILE__, __LINE__);
-            err = snd_pcm_writei(handle, out_buf, out_len);
-		log_print("[%s %d] err: %d\n", __FILE__, __LINE__, err);
-            if (err == -EAGAIN)
-                continue;
-            if (err < 0) {
-                if (xrun_recovery(handle, err) < 0) {
-                    printf("Write error: %s\n", snd_strerror(err));
-                    exit(EXIT_FAILURE);
-                }
-                break;  /* skip one period */
-            }
-			out_len -= err;
-			log_print("pcm write left: %d\n", out_len);
-        }
+			if(len > 0){
+			char *p = out_buf;
+			while (out_len > 0) {
+				err = snd_pcm_writei(handle, p, out_len);
+				if (err == -EAGAIN)
+					continue;
+				if (err < 0) {
+					if (xrun_recovery(handle, err) < 0) {
+						printf("Write error: %s\n", snd_strerror(err));
+						exit(EXIT_FAILURE);
+					}
+					break;  /* skip one period */
+				}
+				out_len -= err;
+				p += err;
+				log_print("pcm write left: %d\n", out_len);
+			}
+			}
+
 #endif
+		}
 	}
 }
 
@@ -163,33 +167,37 @@ void *decode_thread(void *param)
 	}
 
 	while(1){
-		while(player->avctx && ret != AVERROR(EAGAIN)){
+#if 0
+		ret = 0;
+		while(player->avctx && ret >= 0){
 			ret = avcodec_receive_frame(player->avctx, frame);
 			if(ret >= 0){
-				printf("[%s %d]frame put ret: %d\n",__FILE__,__LINE__, ret);
+				printf("[%s %d]frame put ret: %d, format: %d\n",__FILE__,__LINE__, ret, frame->format);
 				frame_queue_put(player->frame_queue, frame, 0);
-			}else{
+			}
+#if 0
+			else{
 				printf("[%s %d] %d %d ret: %d, EAGAIN:%d \n",__FILE__,__LINE__, AVERROR_EOF,AVERROR(EINVAL), AVERROR(EAGAIN), ret);
 			}
-			if(ret == AVERROR(EINVAL)){
-				log_print("avctx is not opened\n");
-				break;
-			}
-			if(ret == AVERROR_EOF){
-				log_print("codec end of file\n");
-				break;
-			}
+#endif
 		}
 
-		log_print("%s wait...\n", __func__);
+#endif
+		log_print("%s wait!!!!!!!!!!!!!!!\n\n", __func__);
 		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) > 0){
 			log_print("packet get position: %ld\n", pkt.pos);
+			ret = avcodec_decode_audio4(player->avctx, frame, &got_frame, &pkt);
+			if(ret >= 0){
+				printf("[%s %d]frame put ret: %d, format: %d\n",__FILE__,__LINE__, ret, frame->format);
+				frame_queue_put(player->frame_queue, frame, 1);
+			}
+		}
+#if 0
 			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
-				printf("[%s %d]\n",__FILE__,__LINE__);
 				sleep(2);
 				packet_pending = 1;
 			}else{
-				printf("avcodec send...\n");
+				//printf("avcodec send...\n");
 				packet_pending = 0;
 				av_packet_unref(&pkt);
 			}
@@ -203,6 +211,7 @@ void *decode_thread(void *param)
 				}
 			}
 		}
+#endif
 	}
 end:
 	av_frame_free(&frame);
@@ -275,7 +284,7 @@ void *read_thread(void *param)
 			}
 			//TODO: wait
 			pthread_mutex_lock(&player->mutex);
-			log_print("%s wait...\n", __func__);
+			log_print("%s wait!!!!!!!!!!!!!!!!!!!\n\n", __func__);
 			pthread_cond_wait(&player->cond, &player->mutex);
 			//after wait
 			ic = player->ic;
@@ -291,12 +300,9 @@ void *read_thread(void *param)
 				continue;
 			}
 		}else{
-			log_print("av read frame packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
-			log_print("packet put %d ...\n", player->pkt_queue->nb_packets);
+			//log_print("av read frame packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
+			//log_print("file pos %ld ...\n", pkt.pos);
 			AVBufferRef *buf = pkt.buf;
-			if(buf){
-				log_print("buffer size: %d, ref number: %d\n", buf->size, *(int *)((int *)buf->buffer + sizeof(char *) + sizeof(int)));
-			}
 			packet_queue_put(player->pkt_queue, &pkt);
 			//av_packet_unref(&pkt);
 		}
@@ -369,7 +375,17 @@ int player_start(player_ctrl *player)
 	pthread_create(&pt, NULL, read_thread, (void *)player);
 	pthread_create(&pt2, NULL, decode_thread, (void *)player);
 	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
-	new_task(player, filename);
+	//new_task(player, filename);
+}
+
+void play_list_destory(play_list *node)
+{
+	if(node){
+		if(node->url){
+			free(node->url);
+		}
+		free(node);
+	}
 }
 
 int player_clean_task(play_list_ctrl *list)
@@ -418,16 +434,6 @@ int player_add_task(player_ctrl *player, const char *url)
 	pthread_mutex_unlock(&list->mutex);
 	pthread_cond_signal(&list->cond);
 	return 0;
-}
-
-void play_list_destory(play_list *node)
-{
-	if(node){
-		if(node->url){
-			free(node->url);
-		}
-		free(node);
-	}
 }
 
 int player_task_pause(play_task *task)
@@ -605,9 +611,9 @@ void *player_task_handle(void *param)
 
 int alsa_params_init(AudioParams *audio)
 {
-    audio->freq = 44100;
-    audio->channels = 2;
-    audio->fmt = SND_PCM_FORMAT_S16;
+	audio->freq = 44100;
+	audio->channels = 2;
+	audio->fmt = SND_PCM_FORMAT_S16;
 	return 0;
 }
 
@@ -656,7 +662,7 @@ int main(int argc, void **argv)
 		log_print("filename: %s\n", filename);
 	}
 	player_ctrl *player = player_init();
-//	player_start(player);
+	//	player_start(player);
 
 	char buf[64];
 	while(1){
