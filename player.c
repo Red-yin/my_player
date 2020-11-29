@@ -1,7 +1,7 @@
 #include "data_queue.h"
 #include <pthread.h>
 #include <semaphore.h>
-#include <libswresample/swresample.h>
+#include "libswresample/swresample.h"
 #include <unistd.h>
 #include <alsa/asoundlib.h>
 #include "libavformat/avformat.h"
@@ -271,11 +271,15 @@ int decode_interrupt_cb(void *ctx)
 
 void *read_thread(void *param)
 {
-	int ret;
+	int ret, got_frame, err;
 	player_ctrl *player = (player_ctrl *)param;
 	AVFormatContext *ic = player->ic;
 	play_task *task = player->task;
 	AVPacket pkt;
+	SwrContext *swr_ctx = NULL;
+	uint8_t *out_buf = av_malloc(1024*16);
+	AVFrame *frame = av_frame_alloc();
+	snd_pcm_t *handle = pcm_init(&player->audio_dst);
 	while(1){
 		if(task == NULL || task->stop || task->eof){
 			if(task && task->stop){
@@ -300,11 +304,68 @@ void *read_thread(void *param)
 				continue;
 			}
 		}else{
+#if 0
 			//log_print("av read frame packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
 			//log_print("file pos %ld ...\n", pkt.pos);
 			AVBufferRef *buf = pkt.buf;
 			packet_queue_put(player->pkt_queue, &pkt);
 			//av_packet_unref(&pkt);
+#endif
+			ret = avcodec_decode_audio4(player->avctx, frame, &got_frame, &pkt);
+			if(frame->format != player->audio_src.fmt || frame->sample_rate != player->audio_src.freq || frame->channels != player->audio_src.channels || frame->channel_layout != player->audio_src.channel_layout){
+				if(swr_ctx){
+					swr_free(&swr_ctx);
+				}
+				swr_ctx = swr_alloc_set_opts(NULL, av_get_default_channel_layout(player->audio_dst.channels), player->audio_dst.fmt, player->audio_dst.freq, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+			if(swr_ctx == NULL || swr_init(swr_ctx) < 0){
+				log_print("Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+						frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->channels,
+						player->audio_dst.freq, av_get_sample_fmt_name(player->audio_dst.fmt), player->audio_dst.channels);
+				swr_free(&swr_ctx);
+				continue; 
+			}
+			player->audio_src.fmt = frame->format;
+			player->audio_src.freq = frame->sample_rate;
+			player->audio_src.channels = frame->channels;
+			player->audio_src.channel_layout = frame->channel_layout;
+			}
+#if 0
+			int i;
+			log_print("================================\n");
+			for(i = 0; i < frame->linesize[0]; i++){
+				log_print("%02x ", frame->extended_data[i]);
+			}
+			log_print("\n");
+#endif
+
+		int out_len = av_samples_get_buffer_size(NULL, player->audio_dst.channels, frame->nb_samples, player->audio_dst.fmt, 0);
+		memset(out_buf, 0, sizeof(out_buf));
+		if(swr_ctx){
+			int len = swr_convert(swr_ctx, &out_buf, frame->nb_samples, frame->extended_data, frame->nb_samples);
+			log_print("swr out len: %d, swr len: %d\n", out_len, len);
+#if 1
+			if(len > 0){
+			char *p = out_buf;
+			while (len > 0) {
+				err = snd_pcm_writei(handle, p, len);
+				if (err == -EAGAIN)
+					continue;
+				if (err < 0) {
+					if (xrun_recovery(handle, err) < 0) {
+						printf("Write error: %s\n", snd_strerror(err));
+						exit(EXIT_FAILURE);
+					}
+					break;  /* skip one period */
+				}
+				len -= err;
+				p += err;
+				log_print("pcm write left: %d\n", len);
+			}
+			}
+
+#endif
+		}
+
 		}
 	}
 
@@ -413,23 +474,27 @@ int player_add_task(player_ctrl *player, const char *url)
 	if(player == NULL || player->list == NULL || url == NULL || strlen(url) <= 0){
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	play_list *node = (play_list *)calloc(1, sizeof(play_list));
 	if(node == NULL){
 		log_print("play list calloc failed\n");
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	node->url = (char *)malloc(strlen(url) + 1);
 	if(node->url == NULL){
 		log_print("url malloc failed \n");
 		free(node);
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	strcpy(node->url, url);
 	play_list_ctrl *list = player->list;
 	pthread_mutex_lock(&list->mutex);
 	if(list->first == NULL){
 		list->first = node;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	list->last = node;
 	pthread_mutex_unlock(&list->mutex);
 	pthread_cond_signal(&list->cond);
@@ -537,33 +602,48 @@ int new_task(player_ctrl *player, const char *url)
 	if(player == NULL || url == NULL){
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	play_task *task = (play_task *)calloc(1, sizeof(play_task));
 	if(task == NULL){
 		log_print("task calloc failed\n");
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 	sem_init(&task->sem, 0, 0);
 
 	int err, stream_index;
-	AVFormatContext *ic = avformat_alloc_context();
+	AVFormatContext *ic = NULL;
+	ic = avformat_alloc_context();
 	if(ic == NULL){
 		log_print("avformat alloc failed\n");
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
+		log_print("%s %d size of point: %d\n", __func__, __LINE__, sizeof(char *));
+		log_print("%s %d size of AVFormatContext : %d\n", __func__, __LINE__, sizeof(AVFormatContext));
 	ic->interrupt_callback.callback = decode_interrupt_cb;
 	ic->interrupt_callback.opaque = (void *)task;
+		long gap = (long)&ic->ctx_flags - (long)ic;
+		long gap1 = (long)&ic->url - (long)ic;
+		long gap2 = (long)&ic->duration - (long)ic;
+		long gap3 = (long)&ic->flags - (long)ic;
+		log_print("%s %d gap: %ld, gap1: %ld, gap2: %ld, gap3: %ld\n", __func__, __LINE__, gap, gap1, gap2, gap3);
+		log_print("%s %d url: %s,ic: %p, &ic: %p, cb: %p, opaque: %p\n", __func__, __LINE__, url, ic, &ic, ic->interrupt_callback.callback, ic->interrupt_callback.opaque);
 	err = avformat_open_input(&ic, url, NULL, NULL);
+		log_print("%s %d\n", __func__, __LINE__);
 	if(err < 0){
 		log_print("%s open input failed: %d\n", url, err);
 		return -1;
 	}
 
+		log_print("%s %d\n", __func__, __LINE__);
 	//if no this call, mp3 decoder report "Header missing"
 	err = avformat_find_stream_info(ic, NULL);
 	if(err < 0){
 		log_print("could not find codec parameters\n");
 		return -1;
 	}
+		log_print("%s %d\n", __func__, __LINE__);
 
 	player->ic = ic;
 	player->task = task;
@@ -577,29 +657,36 @@ void *player_task_handle(void *param)
 	play_list_ctrl *list = player->list;
 	char *url = NULL;
 	while(1){
+		log_print("%s %d\n", __func__, __LINE__);
 		pthread_mutex_lock(&list->mutex);
 		if(list->first == NULL && list->last == NULL){
 			log_print("%s wait...\n", __func__);
 			pthread_cond_wait(&list->cond, &list->mutex);
 		}
+		log_print("%s %d\n", __func__, __LINE__);
 		if(list->current == NULL){
 			list->current = list->first;
 		}else{
 			list->current = list->current->next;
 		}
+		log_print("%s %d\n", __func__, __LINE__);
 		if(list->current == NULL){
 			pthread_mutex_unlock(&list->mutex);
 			player_clean_task(list);
 			continue;
 		}
+		log_print("%s %d\n", __func__, __LINE__);
 		url = (char *)calloc(1, strlen(list->current->url) + 1);
 		if(url == NULL){
 			log_print("url calloc failed\n");
 			exit(1);
 		}
+		log_print("%s %d: %s\n", __func__, __LINE__, list->current->url);
 		memcpy(url, list->current->url, strlen(list->current->url));
+		log_print("%s %d\n", __func__, __LINE__);
 		pthread_mutex_unlock(&list->mutex);
-		log_print("%s url: %s", __func__, url);
+		log_print("%s %d\n", __func__, __LINE__);
+		log_print("%s url: %s\n", __func__, url);
 
 		new_task(player, url);
 		free(url);
@@ -621,7 +708,7 @@ player_ctrl *player_init()
 {
 	//avdevice_register_all();
 	avformat_network_init();
-	av_register_all();
+	//av_register_all();
 
 	player_ctrl *player = (player_ctrl *)calloc(1, sizeof(player_ctrl));
 	if(player == NULL){
@@ -643,9 +730,9 @@ player_ctrl *player_init()
 #if 1
 	pthread_t pt0, pt1, pt2, pt3;
 	pthread_create(&pt0, NULL, player_task_handle, (void *)player);
-	pthread_create(&pt1, NULL, pcm_write_thread, (void *)player);
+	//pthread_create(&pt1, NULL, pcm_write_thread, (void *)player);
 	pthread_create(&pt2, NULL, read_thread, (void *)player);
-	pthread_create(&pt3, NULL, decode_thread, (void *)player);
+	//pthread_create(&pt3, NULL, decode_thread, (void *)player);
 #endif
 	return player;
 fail:
