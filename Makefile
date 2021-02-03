@@ -3,9 +3,11 @@ TARGET = player
 SOURCE_FILES = ${wildcard ./*.c}
 CC = gcc
 RM = rm -rf
-LDFLAG = -lpthread -lavformat -lswscale -lavcodec -lavutil -lswresample -lasound -lm -lva -lX11 -lssl -lcrypto -lz -lva-x11 -lva-drm -lva-x11 -lvdpau -lSDL2
+LDFLAG = -lpthread -lavformat -lswscale -lavcodec -lavutil -lswresample -lasound -lm -lva -lX11 -lssl -lcrypto -lz -lva-x11 -lva-drm -lva-x11 -lvdpau -lSDL2 -lmylog
 LDFLAG += -L./lib/lib
+LDFLAG += -L./extern/lib
 INCLUDE = -I./lib/include
+INCLUDE += -I./extern/lib/include
 MACRO = 
 
 OBJECTS = $(patsubst %.c,%.o, $(SOURCE_FILES))
@@ -25,7 +27,6 @@ $(OBJECTS):$(SOURCE_FILES)
 #gcc  -S  hello.i   -o  hello.s
 #$(COMPILE_FILES):$(PRECOMPILE_FILES)
 	#$(CC) -S $^
-
 
 clean:
 	$(RM) $(TARGET) $(OBJECTS)

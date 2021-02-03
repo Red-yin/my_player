@@ -1,5 +1,5 @@
 #include "data_queue.h"
-#include "log.h"
+#include "slog.h"
 
 void destory_MyAVPacketList(pMyAVPacketList node)
 {
@@ -12,7 +12,7 @@ packetQueue *create_packet_queue(void)
 {
 	packetQueue *q = (packetQueue *)calloc(1, sizeof(packetQueue));
 	if(q == NULL){
-		log_print("calloc failed\n");
+		inf("calloc failed\n");
 		return NULL;
 	}
 	q->first_pkt = q->last_pkt = NULL;
@@ -54,7 +54,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt)
 	}
 	pMyAVPacketList pkt1 = (pMyAVPacketList)calloc(1, sizeof(MyAVPacketList));
 	if(pkt1 == NULL){
-		log_print("[%s %d]calloc failed\n", __FILE__, __LINE__);
+		inf("[%s %d]calloc failed\n", __FILE__, __LINE__);
 		return -1;
 	}
 	pkt1->pkt = *pkt;
@@ -129,18 +129,18 @@ frameQueue *create_frame_queue(int max, packetQueue *pkt_queue)
 	int i;
 	frameQueue *q = (frameQueue *)calloc(1, sizeof(frameQueue));
 	if(q == NULL){
-		log_print("calloc failed\n");
+		inf("calloc failed\n");
 		return NULL;
 	}
 	q->max = max;
 	q->queue = (Frame *)calloc(max, sizeof(Frame));
 	if(q->queue == NULL){
-		log_print("calloc failed\n");
+		inf("calloc failed\n");
 		return NULL;
 	}
 	for(i = 0; i < max; i++){
 		if(!(q->queue[i].frame = av_frame_alloc())){
-			log_print("av frame calloc failed\n");
+			inf("av frame calloc failed\n");
 			return NULL;
 		}
 	}
@@ -158,7 +158,7 @@ void clean_frame_queue(frameQueue *q)
 	if(q == NULL){
 		return;
 	}
-	log_print("%s .....\n", __func__);
+	inf("%s .....\n", __func__);
 	int i;
 	pthread_mutex_lock(&q->mutex);
 	if(q->queue){
@@ -214,7 +214,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	q->write_index++;
 	q->write_index = q->write_index == q->max ? 0: q->write_index;
 	q->size++;
-	log_print("%s pos: %ld.....\n", __func__, frame->pkt_pos);
+	inf("%s pos: %ld.....\n", __func__, frame->pkt_pos);
 	pthread_mutex_unlock(&q->mutex);
 	pthread_cond_signal(&q->cond);
 	return 0;
@@ -230,7 +230,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 		pthread_mutex_unlock(&q->mutex);
 		return -1;
 	}
-	log_print("%s size: %d.....\n", __func__, q->size);
+	inf("%s size: %d.....\n", __func__, q->size);
 	while(q->size <= 0){
 		if(q->pkt_queue && q->pkt_queue->abort_request || q->pkt_queue->eof){
 			pthread_mutex_unlock(&q->mutex);
