@@ -10,6 +10,19 @@
 #include "slog.h"
 #define FRAME_QUEUE_SIZE 16
 
+typedef struct audioBuffer{
+	char *buf;
+	int len;
+}audioBuffer;
+
+typedef struct cycleNodeBuffer{
+	audioBuffer *data;
+	int max;
+	int front;
+	int rear;
+}cycleNodeBuffer;
+
+
 const char *filename = "./waste_time.mp3";
 int xrun_recovery(snd_pcm_t *handle, int err);
 snd_pcm_t *pcm_init();
@@ -515,6 +528,49 @@ int player_clean_task(play_list_ctrl *list)
 	list->current = NULL;
 	pthread_mutex_unlock(&list->mutex);
 	return 0;
+}
+
+void audio_queue_init()
+{
+	audio_buf.max = 16;
+	audio_buf.data = (audioBuffer *)calloc(audio_buf.max, sizeof(audioBuffer));
+	if(audio_buf.data == NULL){
+		VISPEECH_ERR("audio buf calloc failed");
+		return;
+	}
+	audio_buf.front = audio_buf.rear = 0;
+
+}
+
+void save_file()
+{
+	char buf[128] = {0};
+	sprintf(buf, "%s%s_wakeup_%d.pcm", AUDIO_SAVE_DIR, ORIGIN_INPUT_AUDIO_FORMAT_PREFEX, wakeup_count);
+	wakeup_count++;
+
+	if(fpOrg){
+		fclose(fpOrg);
+		fpOrg = NULL;
+	}
+	fpOrg = fopen(buf, "w");
+	if(fpOrg == NULL){
+		VISPEECH_ERR("%s open failed", buf);
+		return;
+	}
+	while(audio_buf.rear != audio_buf.front){
+		if(audio_buf.data[audio_buf.rear].buf){
+			fwrite(audio_buf.data[audio_buf.rear].buf, 1, audio_buf.data[audio_buf.rear].len, fpOrg);
+			free(audio_buf.data[audio_buf.rear].buf);
+			audio_buf.data[audio_buf.rear].buf = NULL;
+		}
+		audio_buf.rear++;
+		if(audio_buf.rear == audio_buf.max){
+			audio_buf.rear = 0;
+		}
+	}
+	audio_buf.rear = audio_buf.front = 0;
+	fclose(fpOrg);
+	fpOrg = NULL;
 }
 
 int player_add_task(player_ctrl *player, const char *url)
