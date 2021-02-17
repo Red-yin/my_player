@@ -245,7 +245,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 		}
 	}
 	av_frame_move_ref(frame, q->queue[q->read_index].frame);
-	av_frame_unref(q->queue[q->read_index].frame);
+	//av_frame_unref(q->queue[q->read_index].frame);
 	q->read_index++;
 	q->read_index = q->read_index == q->max ? 0: q->read_index;
 	q->size--;
