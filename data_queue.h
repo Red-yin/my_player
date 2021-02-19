@@ -1,5 +1,6 @@
 
 #include <pthread.h>
+#include <semaphore.h>
 #include "libavcodec/avcodec.h"
 #include "libavutil/frame.h"
 typedef struct MyAVPacketList{
@@ -11,9 +12,12 @@ typedef struct packetQueue{
 	pMyAVPacketList first_pkt, last_pkt;
 	int nb_packets;
 	int size;
-	int abort_request:1;
-	int pause:1;
-	int eof:1;
+	int max;
+	int abort_request;
+	int pause;
+	int eof;
+	sem_t stop_sem;
+	sem_t start_sem;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 }packetQueue;
@@ -33,12 +37,12 @@ typedef struct frameQueue{
 	packetQueue *pkt_queue;
 }frameQueue;
 
-packetQueue *create_packet_queue(void);
+packetQueue *create_packet_queue(int max);
 void clean_packet_queue(packetQueue *pkt_queue);
 void destory_packet_queue(packetQueue *pkt_queue);
 //copy src data which is saved in q to pkt, pkt must have enough memory
 int packet_queue_get(packetQueue *q, AVPacket *pkt, int block);
-int packet_queue_put(packetQueue *q, AVPacket *pkt);
+int packet_queue_put(packetQueue *q, AVPacket *pkt, int block);
 int packet_queue_signal(packetQueue *q);
 
 

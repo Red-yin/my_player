@@ -9,6 +9,7 @@
 #include "pcm.h"
 #include "slog.h"
 #define FRAME_QUEUE_SIZE 16
+#define PACKET_QUEUE_SIZE 64
 
 enum AVSampleFormat ffmpeg_output_fmt = AV_SAMPLE_FMT_S16;
 snd_pcm_format_t alsa_output_fmt = SND_PCM_FORMAT_S16;
@@ -48,12 +49,14 @@ typedef struct play_list{
 	struct play_list *next;
 }play_list;
 
+#if 0
 typedef struct play_task{
 	int stop:1;
 	int pause:1;
 	int eof:1;
 	sem_t sem;
 }play_task;
+#endif
 
 typedef struct play_list_ctrl{
 	play_list *first;
@@ -79,11 +82,11 @@ typedef enum play_list_loop{
 }play_list_loop;
 
 typedef struct player_ctrl{
-	player_status status;
-	play_task *task;
+	//player_status status;
+	//play_task *task;
 	//play_list_ctrl *list;
+	//play_list_loop loop_type;
 	play_job job;
-	play_list_loop loop_type;
 
 	AVFormatContext *ic;
 	AVCodecContext *avctx;
@@ -170,7 +173,7 @@ void *pcm_write_thread(void *param)
 	fclose(fp);
 #endif
 }
-
+#if 0
 int task_signal(play_task *task)
 {
 	if(task == NULL){
@@ -191,21 +194,20 @@ void task_wait(play_task *task)
 		return;
 	}
 }
+#endif
 
 void *decode_thread(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
 	int got_frame, packet_pending = 0, ret;
 	AVPacket pkt;
-	play_task *task = NULL;
 	AVFrame *frame = av_frame_alloc();
 	if(frame == NULL){
 		inf("av_frame_alloc failed\n");
 		goto end;
 	}
 	while(1){
-		inf("%s wait!!!!!!!!!!!!!!!\n\n", __func__);
-		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) > 0){
+		if(packet_pending == 1 || packet_queue_get(player->pkt_queue, &pkt, 1) == 0){
 			inf("packet get position: %ld\n", pkt.pos);
 #if 0
 			ret = avcodec_decode_audio4(player->avctx, frame, &got_frame, &pkt);
@@ -218,8 +220,11 @@ void *decode_thread(void *param)
 			while(player->avctx && ret >= 0){
 				ret = avcodec_receive_frame(player->avctx, frame);
 				if(ret >= 0){
-					inf("[%s %d]frame put ret: %d, format: %d\n",__FILE__,__LINE__, ret, frame->format);
-					frame_queue_put(player->frame_queue, frame, 1);
+					if(player->pkt_queue->abort_request){
+						av_frame_unref(frame);
+					}else{
+						frame_queue_put(player->frame_queue, frame, 1);
+					}
 				}
 #if 0
 				else{
@@ -227,29 +232,42 @@ void *decode_thread(void *param)
 				}
 #endif
 			}
-			if(AVERROR(EAGAIN) == avcodec_send_packet(player->avctx, &pkt)){
-				sleep(2);
-				packet_pending = 1;
-			}else{
-				//inf("avcodec send...\n");
+			if(player->pkt_queue->abort_request){
 				packet_pending = 0;
 				av_packet_unref(&pkt);
+				continue;
+			}
+			inf("avcodec ctx: %p", player->avctx);
+			ret = avcodec_send_packet(player->avctx, &pkt);
+			if(ret == 0){
+				packet_pending = 0;
+				av_packet_unref(&pkt);
+			}else{
+				if(ret == AVERROR(EAGAIN)){
+					packet_pending = 1;
+				}else{
+					err("avcodec send packet failed: %d[AVERROR_EOF: %d, AVERROR(EINVAL): %d, AVERROR(ENOMEM): %d]", ret, AVERROR_EOF, AVERROR(EINVAL), AVERROR(ENOMEM));
+					sleep(1);
+				}
 			}
 #endif
 		}
 		else{
-			if(packet_pending == 0){
-				if(task->stop){
-					clean_frame_queue(player->frame_queue);
-					//TODO: task stop finished
-					player->status = PLAYER_STOP;
-					task_signal(task);
-				}
+			if(packet_pending == 1){
+				av_packet_unref(&pkt);
+				packet_pending = 0;
+			}
+			if(player->pkt_queue->abort_request){
+				clean_frame_queue(player->frame_queue);
+				sem_post(&player->pkt_queue->stop_sem);
+				inf("decode waiting");
+				sem_wait(&player->pkt_queue->start_sem);
 			}
 		}
 	}
 end:
-	av_frame_free(&frame);
+	if(frame)
+		av_frame_free(&frame);
 	return NULL;
 }
 
@@ -302,17 +320,17 @@ fail:
 
 int decode_interrupt_cb(void *ctx)
 {
-	play_task *task = (play_task *)ctx;
-	return task->stop;
+	packetQueue *pkt_queue = (packetQueue *)ctx;
+	return 0;//pkt_queue->abort_request;
 }
 
 #define PROD_FLAG 1
+int play_start(player_ctrl *player, const char *url);
 void *read_thread(void *param)
 {
 	int ret, got_frame, err;
 	player_ctrl *player = (player_ctrl *)param;
 	AVFormatContext *ic = player->ic;
-	play_task *task = player->task;
 	AVPacket pkt;
 	SwrContext *swr_ctx = NULL;
 	uint8_t *out_buf = av_malloc(1024*16);
@@ -324,33 +342,53 @@ void *read_thread(void *param)
 	FILE *fp = fopen("avcodec_receive.pcm", "w");
 
 	while(1){
-		if(task == NULL || task->stop || task->eof){
-			if(task && task->stop){
+		inf("%s %d", __FILE__, __LINE__);
+		if(player->pkt_queue->abort_request || player->pkt_queue->eof){
+			if(ic)
+				avformat_close_input(&ic);
+			err("player->pkt_queue->abort_request: %d", player->pkt_queue->abort_request);
+			if(player->pkt_queue->abort_request){
 				clean_packet_queue(player->pkt_queue);
 				packet_queue_signal(player->pkt_queue);
 			}
-			//TODO: wait
-			pthread_mutex_lock(&player->mutex);
-			inf("%s wait!!!!!!!!!!!!!!!!!!!\n\n", __func__);
-			pthread_cond_wait(&player->cond, &player->mutex);
-			//after wait
+
+			player->ic = NULL;
+			pthread_mutex_lock(&player->job.mutex);
+			while(player->ic == NULL){
+				if(player->job.url != NULL){
+					play_start(player, player->job.url);
+					free(player->job.url);
+					player->job.url = NULL;
+				}else{
+					pthread_cond_wait(&player->job.cond, &player->job.mutex);
+				}
+			}
+			pthread_mutex_unlock(&player->job.mutex);
+				//after wait
+			inf("read waiting");
+			sem_wait(&player->pkt_queue->stop_sem);
+			player->pkt_queue->abort_request = 0;
+			player->pkt_queue->eof = 0;
+			sem_post(&player->pkt_queue->start_sem);
+
 			ic = player->ic;
-			task = player->task;
-			pthread_mutex_unlock(&player->mutex);
 		}
+		inf("%s %d", __FILE__, __LINE__);
 		ret = av_read_frame(ic, &pkt);
 		if(ret < 0){
+		inf("%s %d", __FILE__, __LINE__);
 			if(ret == AVERROR_EOF || avio_feof(ic->pb)){
 				//packet_queue_put_nullpacket();
-				task->eof = 1;
+				player->pkt_queue->eof = 1;
 				inf("input end....................\n");
 				continue;
 			}
 		}else{
+		inf("%s %d", __FILE__, __LINE__);
 #if PROD_FLAG
 			//inf("av read frame packet info: pts: %ld, dts: %ld, size: %d, duration: %ld, pos: %ld\n", pkt.pts, pkt.dts, pkt.size, pkt.duration, pkt.pos);
 			//inf("file pos %ld ...\n", pkt.pos);
-			packet_queue_put(player->pkt_queue, &pkt);
+			packet_queue_put(player->pkt_queue, &pkt, 1);
 			//av_packet_unref(&pkt);
 #else
 #if 0
@@ -442,72 +480,6 @@ void *read_thread(void *param)
 	fclose(fp);
 }
 
-int player_start(player_ctrl *player)
-{
-	if(player == NULL){
-		return -1;
-	}
-#if 0
-	int err, stream_index;
-	AVFormatContext *ic = avformat_alloc_context();
-	if(ic == NULL){
-		inf("avformat alloc failed\n");
-		return -1;
-	}
-	ic->interrupt_callback.callback = decode_interrupt_cb;
-	ic->interrupt_callback.opaque = (void *)player;
-	err = avformat_open_input(&ic, filename, NULL, NULL);
-	if(err < 0){
-		inf("%s open input failed: %d\n", filename, err);
-		return -1;
-	}
-
-	//if no this call, mp3 decoder report "Header missing"
-	err = avformat_find_stream_info(ic, NULL);
-	if(err < 0){
-		inf("could not find codec parameters\n");
-		return -1;
-	}
-
-#if 0
-	int i;
-	for(i = 0; i < ic->nb_streams; i++){
-		AVStream *stream = ic->streams[i];
-		AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
-		if(codec == NULL){
-			inf("decoder find failed\n");
-			continue;
-		}
-		AVCodecContext *avctx;
-		avctx = avcodec_alloc_context3(codec);
-		if(avctx == NULL){
-			inf("avcocde_alloc_context3 failed\n");
-			return AVERROR(ENOMEM);
-		}
-		int ret = avcodec_parameters_to_context(avctx, stream->codecpar);
-		if(ret < 0){
-			inf("avcodec_parameters_to_context failed\n");
-			return -1;
-		}
-		if(avcodec_open2(avctx, codec, NULL) < 0){
-			inf("could not open codec for input stream %d", i);
-			return -1;
-		}
-		player->avctx = avctx;
-	}
-#endif
-	//stream_index = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-	player->ic = ic;
-	stream_component_open(player, 0);
-#endif
-
-	pthread_t pt, pt2;
-	pthread_create(&pt, NULL, read_thread, (void *)player);
-	pthread_create(&pt2, NULL, decode_thread, (void *)player);
-	//SDL_CreateThread(decode_thread, "decoder", (void *)player);
-	//new_task(player, filename);
-}
-
 void play_list_destory(play_list *node)
 {
 	if(node){
@@ -584,6 +556,78 @@ void save_file()
 	fpOrg = NULL;
 }
 
+int player_add_job(play_job *job, const char *url)
+{
+	if(job == NULL || url == NULL){
+		return -1;
+	}
+	int ret = 0;
+	pthread_mutex_lock(&job->mutex);
+	if(job->url){
+		free(job->url);
+	}
+	int len = strlen(url);
+	job->url = (char *)calloc(1, len+1);
+	if(job->url == NULL){
+		err("url calloc failed");
+		pthread_mutex_unlock(&job->mutex);
+		return -1;
+	}
+	strncpy(job->url, url, len);
+	pthread_mutex_unlock(&job->mutex);
+	pthread_cond_signal(&job->cond);
+end:
+	return ret;
+}
+
+void player_clean_job(play_job *job)
+{
+	if(job == NULL){
+		return;
+	}
+	pthread_mutex_lock(&job->mutex);
+	if(job->url){
+		free(job->url);
+		job->url = NULL;
+	}
+	pthread_mutex_unlock(&job->mutex);
+}
+
+void player_stop(player_ctrl *player)
+{
+	if(player == NULL){
+		return;
+	}
+	player_clean_job(&player->job);
+	player->pkt_queue->abort_request = 1;
+}
+
+void player_play(player_ctrl *player, const char *url)
+{
+	if(player == NULL || url == NULL){
+		return;
+	}
+	player_stop(player);
+	player_add_job(&player->job, url);
+}
+
+void player_pause(player_ctrl *player)
+{
+	if(player == NULL){
+		return;
+	}
+	player->pkt_queue->pause = 1;
+}
+
+void player_resume(player_ctrl *player)
+{
+	if(player == NULL){
+		return;
+	}
+	player->pkt_queue->pause = 0;
+}
+
+#if 0
 int player_add_task(player_ctrl *player, const char *url)
 {
 	if(player == NULL || player->list == NULL || url == NULL || strlen(url) <= 0){
@@ -592,7 +636,7 @@ int player_add_task(player_ctrl *player, const char *url)
 	play_list *node = (play_list *)calloc(1, sizeof(play_list));
 	if(node == NULL){
 		inf("play list calloc failed\n");
-		return -1;
+		return -1;;
 	}
 	node->url = (char *)malloc(strlen(url) + 1);
 	if(node->url == NULL){
@@ -669,9 +713,8 @@ int player_task_clean(player_ctrl *player)
 
 int player_command_stop(player_ctrl *player)
 {
-	player_task_stop(player->task);
-	player_task_clean(player);
-	player->task = NULL;
+	player_job_clean(player);
+	player_task_stop(player);
 	return 0;
 }
 
@@ -712,18 +755,13 @@ int destory_task(play_task *task)
 	free(task);
 	return 0;
 }
+#endif
 
-int new_task(player_ctrl *player, const char *url)
+int play_start(player_ctrl *player, const char *url)
 {
 	if(player == NULL || url == NULL){
 		return -1;
 	}
-	play_task *task = (play_task *)calloc(1, sizeof(play_task));
-	if(task == NULL){
-		inf("task calloc failed\n");
-		return -1;
-	}
-	sem_init(&task->sem, 0, 0);
 
 	int err, stream_index;
 	AVFormatContext *ic = NULL;
@@ -732,18 +770,8 @@ int new_task(player_ctrl *player, const char *url)
 		inf("avformat alloc failed\n");
 		return -1;
 	}
-	//inf("%s %d\n", __func__, __LINE__);
-	inf("%s %d size of point: %d\n", __func__, __LINE__, sizeof(char *));
-	inf("%s %d size of AVFormatContext : %d\n", __func__, __LINE__, sizeof(AVFormatContext));
 	ic->interrupt_callback.callback = decode_interrupt_cb;
-	ic->interrupt_callback.opaque = (void *)task;
-#if 0
-	long gap = (long)&ic->ctx_flags - (long)ic;
-	long gap1 = (long)&ic->url - (long)ic;
-	long gap2 = (long)&ic->duration - (long)ic;
-	long gap3 = (long)&ic->flags - (long)ic;
-	inf("%s %d gap: %ld, gap1: %ld, gap2: %ld, gap3: %ld\n", __func__, __LINE__, gap, gap1, gap2, gap3);
-#endif
+	ic->interrupt_callback.opaque = (void *)player->pkt_queue;
 	inf("%s %d url: %s,ic: %p, &ic: %p, cb: %p, opaque: %p\n", __func__, __LINE__, url, ic, &ic, ic->interrupt_callback.callback, ic->interrupt_callback.opaque);
 	err = avformat_open_input(&ic, url, NULL, NULL);
 	if(err < 0){
@@ -759,11 +787,10 @@ int new_task(player_ctrl *player, const char *url)
 	}
 
 	player->ic = ic;
-	player->task = task;
 	stream_component_open(player, 0);
-	pthread_cond_signal(&player->cond);
+	pthread_cond_signal(&player->job.cond);
 }
-
+#if 0
 void *player_task_handle(void *param)
 {
 	player_ctrl *player = (player_ctrl *)param;
@@ -795,13 +822,14 @@ void *player_task_handle(void *param)
 		pthread_mutex_unlock(&list->mutex);
 		inf("%s url: %s\n", __func__, url);
 
-		new_task(player, url);
+		//new_task(player, url);
 		free(url);
 		task_wait(player->task);
 		destory_task(player->task);
 		player->task = NULL;
 	}
 }
+#endif
 
 int alsa_params_init(AudioParams *audio)
 {
@@ -815,13 +843,15 @@ player_ctrl *player_init()
 {
 	//avdevice_register_all();
 	avformat_network_init();
-	//av_register_all();
+	av_register_all();
 
 	player_ctrl *player = (player_ctrl *)calloc(1, sizeof(player_ctrl));
 	if(player == NULL){
 		inf("player calloc failed\n");
 		return NULL;
 	}
+	pthread_mutex_init(&player->job.mutex, NULL);
+	pthread_cond_init(&player->job.cond, NULL);
 #if 0
 	player->list = (play_list_ctrl *)calloc(1, sizeof(play_list_ctrl));
 	if(player->list == NULL){
@@ -829,15 +859,13 @@ player_ctrl *player_init()
 		goto fail;
 	}
 #endif
-	player->loop_type = 0;
-	player->status = PLAYER_IDLE;
-	packetQueue *pq = create_packet_queue();
+	packetQueue *pq = create_packet_queue(PACKET_QUEUE_SIZE);
 	frameQueue *fq = create_frame_queue(FRAME_QUEUE_SIZE, pq);
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
 	alsa_params_init(&player->audio_dst);
 	pthread_t pt0, pt1, pt2, pt3;
-	pthread_create(&pt0, NULL, player_task_handle, (void *)player);
+	//pthread_create(&pt0, NULL, player_task_handle, (void *)player);
 	pthread_create(&pt2, NULL, read_thread, (void *)player);
 #if PROD_FLAG
 	pthread_create(&pt1, NULL, pcm_write_thread, (void *)player);
@@ -862,8 +890,7 @@ int main(int argc, void **argv)
 	}
 	player_ctrl *player = player_init();
 	sleep(1);
-	player_command_append(player, argv[1]);
-	//	player_start(player);
+	player_play(player, argv[1]);
 #if 1
 	char buf[64];
 	while(1){
@@ -871,7 +898,15 @@ int main(int argc, void **argv)
 		memset(buf, 0, sizeof(buf));
 		scanf("%s", buf);
 		err("get: %s\n", buf);
-		player_command_append(player, buf);
+		if(strcmp(buf, "pause") == 0){
+			player_pause(player);
+		}else if(strcmp(buf, "resume") == 0){
+			player_resume(player);
+		}else if(strcmp(buf, "stop") == 0){
+			player_stop(player);
+		}else{
+			player_play(player, buf);
+		}
 	}
 #endif
 

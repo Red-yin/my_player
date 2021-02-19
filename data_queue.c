@@ -8,7 +8,7 @@ void destory_MyAVPacketList(pMyAVPacketList node)
 	}
 }
 
-packetQueue *create_packet_queue(void)
+packetQueue *create_packet_queue(int max)
 {
 	packetQueue *q = (packetQueue *)calloc(1, sizeof(packetQueue));
 	if(q == NULL){
@@ -18,6 +18,10 @@ packetQueue *create_packet_queue(void)
 	q->first_pkt = q->last_pkt = NULL;
 	pthread_mutex_init(&q->mutex, NULL);
 	pthread_cond_init(&q->cond, NULL);
+	sem_init(&q->stop_sem, 0, 0);
+	sem_init(&q->start_sem, 0, 0);
+	q->max = max;
+	q->abort_request = 1;
 	return q;
 }
 
@@ -47,7 +51,7 @@ void destory_packet_queue(packetQueue *q)
 	pthread_cond_destroy(&q->cond);
 }
 
-int packet_queue_put(packetQueue *q, AVPacket *pkt)
+int packet_queue_put(packetQueue *q, AVPacket *pkt, int block)
 {
 	if(q == NULL || pkt == NULL){
 		return -1;
@@ -65,6 +69,15 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt)
 		free(pkt1);
 		return -1;
 	}
+	for(;q->nb_packets >= q->max;){
+		if(block){
+			pthread_cond_wait(&q->cond, &q->mutex);
+		}else{
+			pthread_mutex_unlock(&q->mutex);
+			free(pkt1);
+			return -1;
+		}
+	}
 
 	if(q->last_pkt){
 		q->last_pkt->next = pkt1;
@@ -74,6 +87,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt)
 	q->last_pkt = pkt1;
 	q->nb_packets++;
 	q->size += pkt1->pkt.size + sizeof(*pkt1);
+	inf("packet size: %d, packet number: %d", q->size, q->nb_packets);
 	pthread_mutex_unlock(&q->mutex);
 	pthread_cond_signal(&q->cond);
 	return 0;
@@ -102,16 +116,17 @@ int packet_queue_get(packetQueue *q, AVPacket *pkt, int block)
 			q->nb_packets--;
 			q->size -= pkt1->pkt.size + sizeof(*pkt1);
 			free(pkt1);
-			ret = 1;
+			ret = 0;
 			break;
 		}else if(block){
 			pthread_cond_wait(&q->cond, &q->mutex);
 		}else{
-			ret = 0;
+			ret = -2;
 			break;
 		}
 	}
 	pthread_mutex_unlock(&q->mutex);
+	pthread_cond_signal(&q->cond);
 	return ret;
 }
 
@@ -226,16 +241,20 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 		return -1;
 	}
 	pthread_mutex_lock(&q->mutex);
+#if 0
 	if(q->pkt_queue && q->pkt_queue->abort_request){
 		pthread_mutex_unlock(&q->mutex);
 		return -1;
 	}
+#endif
 	inf("%s size: %d.....\n", __func__, q->size);
 	while(q->size <= 0){
+#if 0
 		if(q->pkt_queue && q->pkt_queue->abort_request || q->pkt_queue->eof){
 			pthread_mutex_unlock(&q->mutex);
 			return -1;
 		}
+#endif
 		if(block){
 			pthread_cond_wait(&q->cond, &q->mutex);
 		}
