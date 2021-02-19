@@ -115,6 +115,9 @@ void *pcm_write_thread(void *param)
 	FILE *fp = fopen("thread.pcm", "w");
 #endif
 	while(1){
+		while(player->pkt_queue->pause){
+			usleep(100*1000);
+		}
 		frame_queue_get(fq, frame, 1);
 		inf("frame get info:len: %d, pos: %ld, channels: %d, channel_layout: %ld, quality: %d, pts: %ld, nb_samples: %d, sample_rate: %d\n", frame->linesize[0], frame->pkt_pos, frame->channels, frame->channel_layout, frame->quality, frame->pts, frame->nb_samples, frame->sample_rate);
 
@@ -321,7 +324,7 @@ fail:
 int decode_interrupt_cb(void *ctx)
 {
 	packetQueue *pkt_queue = (packetQueue *)ctx;
-	return 0;//pkt_queue->abort_request;
+	return pkt_queue->abort_request;
 }
 
 #define PROD_FLAG 1
@@ -352,10 +355,13 @@ void *read_thread(void *param)
 				packet_queue_signal(player->pkt_queue);
 			}
 
+			sem_wait(&player->pkt_queue->stop_sem);
+
 			player->ic = NULL;
 			pthread_mutex_lock(&player->job.mutex);
 			while(player->ic == NULL){
 				if(player->job.url != NULL){
+					player->pkt_queue->abort_request = 0;
 					play_start(player, player->job.url);
 					free(player->job.url);
 					player->job.url = NULL;
@@ -364,10 +370,6 @@ void *read_thread(void *param)
 				}
 			}
 			pthread_mutex_unlock(&player->job.mutex);
-				//after wait
-			inf("read waiting");
-			sem_wait(&player->pkt_queue->stop_sem);
-			player->pkt_queue->abort_request = 0;
 			player->pkt_queue->eof = 0;
 			sem_post(&player->pkt_queue->start_sem);
 
@@ -609,6 +611,7 @@ void player_play(player_ctrl *player, const char *url)
 	}
 	player_stop(player);
 	player_add_job(&player->job, url);
+	pthread_cond_signal(&player->pkt_queue->cond);
 }
 
 void player_pause(player_ctrl *player)

@@ -70,6 +70,11 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt, int block)
 		return -1;
 	}
 	for(;q->nb_packets >= q->max;){
+		if(q->abort_request){
+			pthread_mutex_unlock(&q->mutex);
+			free(pkt1);
+			return -1;
+		}
 		if(block){
 			pthread_cond_wait(&q->cond, &q->mutex);
 		}else{
