@@ -10,6 +10,15 @@
 #include "slog.h"
 #define FRAME_QUEUE_SIZE 16
 
+enum AVSampleFormat ffmpeg_output_fmt = AV_SAMPLE_FMT_S16;
+snd_pcm_format_t alsa_output_fmt = SND_PCM_FORMAT_S16;
+int alsa_output_sample_rate = 44100;
+int ffmpeg_output_sample_rate = 44100;
+int alsa_output_channels = 2;
+//int64_t ffmpeg_output_channel_layout = AV_CH_LAYOUT_MONO;
+int64_t ffmpeg_output_channel_layout = AV_CH_LAYOUT_STEREO;
+int ffmpeg_output_channels = 2;
+
 typedef struct audioBuffer{
 	char *buf;
 	int len;
@@ -55,6 +64,12 @@ typedef struct play_list_ctrl{
 	pthread_cond_t cond;
 }play_list_ctrl;
 
+typedef struct play_job{
+	char *url;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+}play_job;
+
 typedef enum play_list_loop{
 	ORDER,
 	ALL_REPEAT,
@@ -66,7 +81,8 @@ typedef enum play_list_loop{
 typedef struct player_ctrl{
 	player_status status;
 	play_task *task;
-	play_list_ctrl *list;
+	//play_list_ctrl *list;
+	play_job job;
 	play_list_loop loop_type;
 
 	AVFormatContext *ic;
@@ -91,7 +107,7 @@ void *pcm_write_thread(void *param)
 	AVFrame *frame = av_frame_alloc();
 	SwrContext *swr_ctx = NULL;
 	uint8_t *out_buf = av_malloc(1024*16);
-#define SAVE_FILE_FLAG 1
+#define SAVE_FILE_FLAG 0
 #if SAVE_FILE_FLAG
 	FILE *fp = fopen("thread.pcm", "w");
 #endif
@@ -104,7 +120,8 @@ void *pcm_write_thread(void *param)
 		if(swr_ctx){
 			swr_free(&swr_ctx);
 		}
-		swr_ctx = swr_alloc_set_opts(NULL, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, frame->sample_rate, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+		//swr_ctx = swr_alloc_set_opts(NULL, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, frame->sample_rate, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
+		swr_ctx = swr_alloc_set_opts(NULL, ffmpeg_output_channel_layout, ffmpeg_output_fmt, ffmpeg_output_sample_rate, frame->channel_layout, frame->format, frame->sample_rate, 0, NULL);
 		if(swr_ctx == NULL || swr_init(swr_ctx) < 0){
 			inf("Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
 					frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->channels,
@@ -126,7 +143,7 @@ void *pcm_write_thread(void *param)
 			inf("swr out len: %d, swr len: %d\n", out_len, len);
 #if SAVE_FILE_FLAG
 			fwrite(out_buf, 1, out_len, fp);
-#endif
+#else
 			if(len > 0){
 				char *p = out_buf;
 				while (len > 0) {
@@ -145,6 +162,7 @@ void *pcm_write_thread(void *param)
 					inf("pcm write left: %d\n", len);
 				}
 			}
+#endif
 		}
 		av_frame_unref(frame);
 	}
@@ -588,7 +606,12 @@ int player_add_task(player_ctrl *player, const char *url)
 	if(list->first == NULL){
 		list->first = node;
 	}
-	list->last = node;
+	if(list->last){
+		list->last->next = node;
+	}else{
+		list->last = node;
+	}
+	list->last = list->last->next;
 	pthread_mutex_unlock(&list->mutex);
 	pthread_cond_signal(&list->cond);
 	return 0;
@@ -782,10 +805,9 @@ void *player_task_handle(void *param)
 
 int alsa_params_init(AudioParams *audio)
 {
-	audio->freq = 44100;
-	audio->channels = 2;
-	audio->fmt = SND_PCM_FORMAT_S16;
-	//audio->channel_layout = 3;
+	audio->freq = alsa_output_sample_rate;
+	audio->channels = alsa_output_channels;
+	audio->fmt = alsa_output_fmt;
 	return 0;
 }
 
@@ -800,11 +822,13 @@ player_ctrl *player_init()
 		inf("player calloc failed\n");
 		return NULL;
 	}
+#if 0
 	player->list = (play_list_ctrl *)calloc(1, sizeof(play_list_ctrl));
 	if(player->list == NULL){
 		inf("player list calloc failed\n");
 		goto fail;
 	}
+#endif
 	player->loop_type = 0;
 	player->status = PLAYER_IDLE;
 	packetQueue *pq = create_packet_queue();
@@ -812,14 +836,12 @@ player_ctrl *player_init()
 	player->pkt_queue = pq;
 	player->frame_queue = fq;
 	alsa_params_init(&player->audio_dst);
-#if 1
 	pthread_t pt0, pt1, pt2, pt3;
 	pthread_create(&pt0, NULL, player_task_handle, (void *)player);
 	pthread_create(&pt2, NULL, read_thread, (void *)player);
 #if PROD_FLAG
 	pthread_create(&pt1, NULL, pcm_write_thread, (void *)player);
 	pthread_create(&pt3, NULL, decode_thread, (void *)player);
-#endif
 #endif
 	return player;
 fail:
@@ -834,18 +856,21 @@ int main(int argc, void **argv)
 	if(argc > 1){
 		filename = argv[1];
 		inf("filename: %s\n", filename);
+	}else{
+		err("usage: ./player fileName");
+		return -1;
 	}
 	player_ctrl *player = player_init();
 	sleep(1);
 	player_command_append(player, argv[1]);
 	//	player_start(player);
-#if 0
+#if 1
 	char buf[64];
 	while(1){
-		inf("cli>");
+		err("cli>");
 		memset(buf, 0, sizeof(buf));
 		scanf("%s", buf);
-		inf("get: %s\n", buf);
+		err("get: %s\n", buf);
 		player_command_append(player, buf);
 	}
 #endif
