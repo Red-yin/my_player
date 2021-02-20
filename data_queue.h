@@ -52,3 +52,4 @@ void destory_frame_queue(frameQueue *frame_queue);
 int frame_queue_put(frameQueue *q, AVFrame *frame, int block);
 int frame_queue_get(frameQueue *q, AVFrame *frame, int block);
 int frame_queue_set_pkt_queue(frameQueue *q, packetQueue *pkt_queue);
+int frame_queue_signal(frameQueue *q);

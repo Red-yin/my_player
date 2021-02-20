@@ -12,7 +12,7 @@ packetQueue *create_packet_queue(int max)
 {
 	packetQueue *q = (packetQueue *)calloc(1, sizeof(packetQueue));
 	if(q == NULL){
-		inf("calloc failed\n");
+		err("calloc failed\n");
 		return NULL;
 	}
 	q->first_pkt = q->last_pkt = NULL;
@@ -58,7 +58,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt, int block)
 	}
 	pMyAVPacketList pkt1 = (pMyAVPacketList)calloc(1, sizeof(MyAVPacketList));
 	if(pkt1 == NULL){
-		inf("[%s %d]calloc failed\n", __FILE__, __LINE__);
+		err("calloc failed");
 		return -1;
 	}
 	pkt1->pkt = *pkt;
@@ -92,7 +92,7 @@ int packet_queue_put(packetQueue *q, AVPacket *pkt, int block)
 	q->last_pkt = pkt1;
 	q->nb_packets++;
 	q->size += pkt1->pkt.size + sizeof(*pkt1);
-	inf("packet size: %d, packet number: %d", q->size, q->nb_packets);
+	dbg("packet size: %d, packet number: %d", q->size, q->nb_packets);
 	pthread_mutex_unlock(&q->mutex);
 	pthread_cond_signal(&q->cond);
 	return 0;
@@ -149,18 +149,18 @@ frameQueue *create_frame_queue(int max, packetQueue *pkt_queue)
 	int i;
 	frameQueue *q = (frameQueue *)calloc(1, sizeof(frameQueue));
 	if(q == NULL){
-		inf("calloc failed\n");
+		err("calloc failed\n");
 		return NULL;
 	}
 	q->max = max;
 	q->queue = (Frame *)calloc(max, sizeof(Frame));
 	if(q->queue == NULL){
-		inf("calloc failed\n");
+		err("calloc failed\n");
 		return NULL;
 	}
 	for(i = 0; i < max; i++){
 		if(!(q->queue[i].frame = av_frame_alloc())){
-			inf("av frame calloc failed\n");
+			err("av frame calloc failed\n");
 			return NULL;
 		}
 	}
@@ -178,7 +178,6 @@ void clean_frame_queue(frameQueue *q)
 	if(q == NULL){
 		return;
 	}
-	inf("%s .....\n", __func__);
 	int i;
 	pthread_mutex_lock(&q->mutex);
 	if(q->queue){
@@ -234,7 +233,7 @@ int frame_queue_put(frameQueue *q, AVFrame *frame, int block)
 	q->write_index++;
 	q->write_index = q->write_index == q->max ? 0: q->write_index;
 	q->size++;
-	inf("%s pos: %ld.....\n", __func__, frame->pkt_pos);
+	dbg("%s pos: %ld.....\n", __func__, frame->pkt_pos);
 	pthread_mutex_unlock(&q->mutex);
 	pthread_cond_signal(&q->cond);
 	return 0;
@@ -246,15 +245,15 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 		return -1;
 	}
 	pthread_mutex_lock(&q->mutex);
-#if 0
+#if 1
 	if(q->pkt_queue && q->pkt_queue->abort_request){
 		pthread_mutex_unlock(&q->mutex);
 		return -1;
 	}
 #endif
-	inf("%s size: %d.....\n", __func__, q->size);
+	dbg("%s size: %d.....\n", __func__, q->size);
 	while(q->size <= 0){
-#if 0
+#if 1
 		if(q->pkt_queue && q->pkt_queue->abort_request || q->pkt_queue->eof){
 			pthread_mutex_unlock(&q->mutex);
 			return -1;
@@ -288,5 +287,14 @@ int frame_queue_set_pkt_queue(frameQueue *q, packetQueue *pkt_queue)
 	pthread_mutex_lock(&q->mutex);
 	q->pkt_queue = pkt_queue;
 	pthread_mutex_unlock(&q->mutex);
+	return 0;
+}
+
+int frame_queue_signal(frameQueue *q)
+{
+	if(q == NULL){
+		return -1;
+	}
+	pthread_cond_signal(&q->cond);
 	return 0;
 }
