@@ -340,11 +340,10 @@ void *read_thread(void *param)
 	SwrContext *swr_ctx = NULL;
 	uint8_t *out_buf = av_malloc(1024*16);
 	AVFrame *frame = av_frame_alloc();
-#if PROD_FLAG 
-#else
+#if !PROD_FLAG 
 	snd_pcm_t *handle = pcm_init(&player->audio_dst);
-#endif
 	FILE *fp = fopen("avcodec_receive.pcm", "w");
+#endif
 
 	while(1){
 		if(player->pkt_queue->abort_request || player->pkt_queue->eof){
@@ -478,7 +477,9 @@ void *read_thread(void *param)
 
 	avformat_close_input(&ic);
 	dbg("read thread end.....\n");
+#if !PROD_FLAG 
 	fclose(fp);
+#endif
 }
 
 void play_list_destory(play_list *node)
