@@ -888,7 +888,7 @@ int main(int argc, void **argv)
 		filename = argv[1];
 		dbg("filename: %s\n", filename);
 	}else{
-		err("usage: ./player fileName");
+		inf("usage: ./player fileName");
 		return -1;
 	}
 	player_ctrl *player = player_init();
@@ -907,6 +907,10 @@ int main(int argc, void **argv)
 			player_resume(player);
 		}else if(strcmp(buf, "stop") == 0){
 			player_stop(player);
+		}else if(strcmp(buf, "dbg") == 0){
+			log_level_set("DBG");
+		}else if(strcmp(buf, "err") == 0){
+			log_level_set("ERR");
 		}else{
 			player_play(player, buf);
 		}
