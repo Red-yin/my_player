@@ -254,7 +254,7 @@ int frame_queue_get(frameQueue *q, AVFrame *frame, int block)
 	dbg("%s size: %d.....\n", __func__, q->size);
 	while(q->size <= 0){
 #if 1
-		if(q->pkt_queue && q->pkt_queue->abort_request || q->pkt_queue->eof){
+		if(q->pkt_queue && q->pkt_queue->abort_request){
 			pthread_mutex_unlock(&q->mutex);
 			return -1;
 		}
